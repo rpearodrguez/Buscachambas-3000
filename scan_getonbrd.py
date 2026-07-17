@@ -1,0 +1,904 @@
+"""
+Job Scanner multi-sitio / multi-país (GetOnBrd, Computrabajo, Laborum,
+Trabajando.cl, LinkedIn)
+-----------------------------------------------------------
+Recorre los sitios de empleo configurados para un país, se queda con
+las ofertas remotas que matchean algún keyword, y exporta un CSV único
+con: sitio, título, empresa, keywords que matchearon, si es remota, si
+sigue activa, y el link.
+
+USO:
+    pip install requests beautifulsoup4 --break-system-packages
+
+    python scan_getonbrd.py                        # país por defecto (Chile), todos sus sitios
+    python scan_getonbrd.py --pais Chile
+    python scan_getonbrd.py --pais Chile --solo laborum_cl      # solo re-correr un sitio puntual
+    python scan_getonbrd.py --keywords-file keywords.txt        # usar keywords desde archivo
+    python scan_getonbrd.py --generar-prompt-keywords            # imprime un prompt para pegar en Claude
+                                                                   # y generar keywords.txt, no escanea nada
+
+CONFIGURACIÓN:
+    - keywords.txt (opcional, una keyword por línea): si existe, se usa
+      en vez de DEFAULT_KEYWORDS. Se puede generar su contenido pegando
+      en Claude el prompt de --generar-prompt-keywords.
+    - PAISES / SITIOS más abajo: agregar un país nuevo es agregar sus
+      adaptadores a SITIOS y una entrada en PAISES con sus ids.
+    - Correr sin --solo no borra resultados de otros sitios/países ya
+      guardados en el CSV: solo se reemplazan las filas de los sitios
+      que efectivamente corrieron esta vez.
+
+NOTAS POR SITIO (Chile):
+    - GetOnBrd: no tiene buscador por texto libre (/empleos/busqueda
+      devuelve 404). Se recorren categorías (/jobs/<categoria>) y se
+      visita cada oferta para revisar si sigue activa, si es remota, y
+      si el texto matchea algún keyword.
+    - Computrabajo (cl.computrabajo.com): sí soporta búsqueda por texto
+      vía /trabajo-de-<keyword>. La modalidad (remoto/híbrido/presencial)
+      viene en la misma tarjeta de resultados, sin visitar cada oferta.
+    - Laborum (laborum.cl): es una SPA — la búsqueda real ocurre en
+      POST /api/avisos/searchV2 con header "x-site-id: BMCL" y body
+      {"query": "<keyword>"}. La modalidad también viene en la respuesta
+      (campo "modalidadTrabajo"), así que tampoco hace falta visitar
+      cada oferta. El link de la oferta se arma como
+      /empleos/<slug-del-titulo>-<id>.html; el id en la URL es lo que
+      realmente usa el sitio para resolver la oferta al abrirla.
+    - Trabajando.cl: también es una SPA — la búsqueda real ocurre en
+      GET /api/searchjob?palabraClave=<keyword>&pagina=1&orden=RANKING&
+      tipoOrden=DESC (sin ubicacion/region busca en todo Chile). La
+      modalidad viene en "nombreJornada": "Teletrabajo" es 100% remoto,
+      "Mixta (Teletrabajo + Presencial)" es híbrido (no cuenta como
+      remoto acá). El link se arma como
+      /trabajo-empleo/<keyword>/trabajo/<idOferta>-<slug-del-cargo>.
+    - LinkedIn: no tiene RSS oficial. Se usa el endpoint público
+      "jobs-guest" (sin login) que LinkedIn usa internamente para su
+      propio buscador. No es una API oficial/documentada: puede cambiar
+      o dejar de funcionar sin aviso. Se filtra a remoto vía f_WT=2.
+
+    En los 4 sitios de búsqueda por keyword (Computrabajo, Laborum,
+    Trabajando.cl, LinkedIn) no se verifica "activa" visitando cada
+    oferta: sus buscadores son índices en vivo, así que lo que
+    devuelven ya está activo por definición.
+"""
+
+import os
+import time
+import csv
+import sys
+import json
+import re
+import argparse
+import unicodedata
+from datetime import datetime
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+# Keywords por defecto si no existe keywords.txt (ver cargar_keywords()).
+# Calzan con el stack real de Richard (automatización, backup, soporte
+# técnico avanzado) — pensadas para Chile. Para otro perfil/país, generar
+# keywords.txt con --generar-prompt-keywords.
+DEFAULT_KEYWORDS = [
+    "automatización",
+    "python",
+    "selenium",
+    "platform engineer",
+    "soporte técnico",
+    "backup",
+    "data protection",
+    "tier 3",
+    "powershell",
+]
+
+KEYWORDS_FILE_DEFAULT = "keywords.txt"
+PERFIL_FILE_DEFAULT = "perfil.txt"
+
+REQUIRE_REMOTE = True
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
+REQUEST_DELAY_SECONDS = 1.5  # delay entre requests, para no saturar los sitios
+OUTPUT_CSV = "ofertas_empleos.csv"
+CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion"]
+
+
+def hoy() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def slugify_ascii(texto: str) -> str:
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    texto = re.sub(r"[^a-zA-Z0-9]+", "-", texto).strip("-").lower()
+    return texto
+
+
+def cargar_keywords(path: str = KEYWORDS_FILE_DEFAULT) -> list[str]:
+    """Lee keywords desde un archivo (una por línea, '#' comenta la línea).
+    Si no existe o queda vacío, usa DEFAULT_KEYWORDS."""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            kws = [linea.strip() for linea in f if linea.strip() and not linea.strip().startswith("#")]
+        if kws:
+            return kws
+    return DEFAULT_KEYWORDS
+
+
+def construir_prompt_keywords(perfil: str = "") -> str:
+    """Arma el texto del prompt para pedirle keywords a Claude. Separado de
+    generar_prompt_keywords() para poder reusarlo desde la GUI (Streamlit)
+    sin depender de un archivo en disco ni de print()."""
+    bloque_perfil = perfil.strip() if perfil.strip() else "[Pega acá tu perfil/CV o una descripción de tu stack técnico y objetivo laboral]"
+
+    return f"""Actúa como reclutador técnico senior especializado en el mercado laboral tech.
+
+Perfil del candidato:
+{bloque_perfil}
+
+Necesito una lista de keywords de búsqueda para portales de empleo (GetOnBrd, Computrabajo, Laborum, LinkedIn, etc.), no términos genéricos de CV.
+
+Instrucciones:
+- Devuelve entre 8 y 15 keywords o frases cortas (máximo 2-3 palabras) que realmente aparecen en avisos de trabajo reales para este perfil.
+- Prioriza términos técnicos concretos (herramientas, lenguajes, certificaciones, nombres de rol) por sobre términos genéricos.
+- Mezcla español e inglés según cómo se busca habitualmente cada término (ej. "soporte técnico" pero "platform engineer").
+- Responde SOLO con la lista, una keyword por línea, sin numeración, viñetas ni texto adicional — la voy a pegar directo en un archivo keywords.txt."""
+
+
+def generar_prompt_keywords(perfil_path: str = PERFIL_FILE_DEFAULT) -> None:
+    """Imprime (CLI) el prompt para pegar en Claude y generar keywords.txt.
+    No escanea nada — es solo texto para copiar/pegar."""
+    perfil = ""
+    if os.path.exists(perfil_path):
+        with open(perfil_path, encoding="utf-8") as f:
+            perfil = f.read().strip()
+
+    print(construir_prompt_keywords(perfil))
+    print(f"\n---\nGuarda la respuesta de Claude en '{KEYWORDS_FILE_DEFAULT}' (una keyword por línea) y vuelve a correr el script.")
+
+
+# ---------------------------------------------------------------------------
+# GetOnBrd
+# ---------------------------------------------------------------------------
+
+GETONBRD_BASE_URL = "https://www.getonbrd.com"
+
+# Categorías a recorrer (slugs reales de /jobs/<slug>). Lista completa de
+# categorías disponible navegando https://www.getonbrd.com/empleos/
+GETONBRD_CATEGORIES = [
+    "programming",
+    "sysadmin-devops-qa",
+    "technical-support",
+    "cybersecurity",
+    "machine-learning-ai",
+    "data-science-analytics",
+]
+
+GETONBRD_SEÑALES_CERRADA = [
+    "closed job",
+    "ya no acepta postulaciones",
+    "no longer accepting applications",
+    "esta oferta ha sido cerrada",
+    "oferta cerrada",
+    "position filled",
+    "posición ya fue cubierta",
+    "ya no está disponible",
+]
+
+GETONBRD_SEÑALES_REMOTO = [
+    "fully remote",
+    "100% remoto",
+    "100% remote",
+    "remote-first",
+    "trabajo remoto",
+]
+
+
+def _es_link_de_oferta_getonbrd(href: str) -> bool:
+    """Distingue un link de oferta puntual (/jobs/<categoria>/<slug>) de un
+    link de navegación a la categoría misma (/jobs/<categoria>)."""
+    partes = [p for p in urlparse(href).path.split("/") if p]
+    return len(partes) >= 3 and partes[0] in ("jobs", "empleos")
+
+
+def _getonbrd_ofertas_categoria(categoria: str) -> list[dict]:
+    url = f"{GETONBRD_BASE_URL}/jobs/{categoria}"
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    ofertas = []
+
+    # GetOnBrd lista cada oferta como <a> hacia /jobs/... o /empleos/...
+    # (usa ambos esquemas de URL indistintamente para las mismas ofertas).
+    for card in soup.select("a[href*='/empleos/'], a[href*='/jobs/']"):
+        href = card.get("href", "")
+        if not href or not _es_link_de_oferta_getonbrd(href):
+            continue
+        titulo = card.get_text(strip=True)
+        if not titulo:
+            continue
+        link = urljoin(GETONBRD_BASE_URL, href)
+        ofertas.append({"titulo": titulo, "link": link})
+
+    return ofertas
+
+
+def _getonbrd_inspeccionar_oferta(link: str) -> dict:
+    try:
+        resp = requests.get(link, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return {"activa": False, "motivo": f"error de red: {e}", "remota": False, "texto": ""}
+
+    texto = resp.text.lower()
+
+    for señal in GETONBRD_SEÑALES_CERRADA:
+        if señal in texto:
+            return {"activa": False, "motivo": f"cerrada (detectado: '{señal}')", "remota": False, "texto": texto}
+
+    remota = any(señal in texto for señal in GETONBRD_SEÑALES_REMOTO)
+    return {"activa": True, "motivo": "activa", "remota": remota, "texto": texto}
+
+
+def escanear_getonbrd(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+    total_categorias = len(GETONBRD_CATEGORIES)
+    for i, categoria in enumerate(GETONBRD_CATEGORIES, 1):
+        if debe_detener and debe_detener():
+            return []
+        if on_progreso:
+            on_progreso(f"categoría: {categoria}", i, total_categorias)
+        try:
+            print(f"  → GetOnBrd / categoría: {categoria}")
+            for oferta in _getonbrd_ofertas_categoria(categoria):
+                candidatas.setdefault(oferta["link"], oferta)
+        except requests.RequestException as e:
+            mensaje = f"GetOnBrd, categoría '{categoria}': {e}"
+            print(f"    ⚠ error en categoría '{categoria}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(mensaje)
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    total_ofertas = len(candidatas)
+    for i, (link, data) in enumerate(candidatas.items(), 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"revisando: {data['titulo'][:40]}", i, total_ofertas)
+
+        info = _getonbrd_inspeccionar_oferta(link)
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+        matches = [kw for kw in keywords if kw.lower() in info["texto"]]
+        if not matches:
+            continue
+        if require_remote and not info["remota"]:
+            continue
+
+        fila = {
+            "sitio": "GetOnBrd",
+            "titulo": data["titulo"],
+            "empresa": "",
+            "keywords_match": ", ".join(matches),
+            "remota": "SI" if info["remota"] else "NO",
+            "activa": "SI" if info["activa"] else "NO",
+            "motivo": info["motivo"],
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# Computrabajo Chile
+# ---------------------------------------------------------------------------
+
+COMPUTRABAJO_BASE_URL = "https://cl.computrabajo.com"
+
+
+def escanear_computrabajo(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        slug = slugify_ascii(keyword)
+        url = f"{COMPUTRABAJO_BASE_URL}/trabajo-de-{slug}"
+        try:
+            print(f"  → Computrabajo / keyword: {keyword}")
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select("article.box_offer"):
+                title_a = card.select_one("h2.fs18 a.js-o-link")
+                if not title_a:
+                    continue
+                titulo = title_a.get_text(strip=True)
+                href = title_a.get("href", "").split("#")[0]
+                link = urljoin(COMPUTRABAJO_BASE_URL, href)
+
+                empresa_a = card.select_one("[offer-grid-article-company-url]")
+                empresa = empresa_a.get_text(strip=True) if empresa_a else ""
+
+                modalidad_span = card.select_one("div.fs13.mt15 span.dIB")
+                modalidad_texto = modalidad_span.get_text(strip=True) if modalidad_span else ""
+                remota = "remoto" in modalidad_texto.lower()
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": empresa, "remota": remota, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"Computrabajo, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "Computrabajo",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# Laborum
+# ---------------------------------------------------------------------------
+
+LABORUM_SEARCH_URL = "https://www.laborum.cl/api/avisos/searchV2"
+LABORUM_HEADERS = {
+    **HEADERS,
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "x-site-id": "BMCL",
+    "Origin": "https://www.laborum.cl",
+    "Referer": "https://www.laborum.cl/empleos.html",
+}
+
+
+def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → Laborum / keyword: {keyword}")
+            body = {"query": keyword}
+            if require_remote:
+                body["filtros"] = [{"id": "modalidad_trabajo", "value": "remoto"}]
+            resp = requests.post(
+                LABORUM_SEARCH_URL,
+                headers=LABORUM_HEADERS,
+                params={"pageSize": 50, "page": 0, "sort": "RELEVANTES"},
+                data=json.dumps(body),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("content", []):
+                titulo = item.get("titulo", "")
+                empresa = item.get("empresa", "") or ""
+                modalidad = (item.get("modalidadTrabajo") or "").lower()
+                remota = "remoto" in modalidad
+                slug = slugify_ascii(f"{titulo} {empresa}")
+                link = f"https://www.laborum.cl/empleos/{slug}-{item['id']}.html"
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo,
+                        "empresa": empresa,
+                        "remota": remota,
+                        "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"Laborum, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "Laborum",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# Trabajando.cl
+# ---------------------------------------------------------------------------
+
+TRABAJANDO_SEARCH_URL = "https://www.trabajando.cl/api/searchjob"
+
+
+def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → Trabajando.cl / keyword: {keyword}")
+            params = {"palabraClave": keyword, "pagina": 1, "orden": "RANKING", "tipoOrden": "DESC"}
+            referer = "https://www.trabajando.cl/trabajo-empleo/"
+            if require_remote:
+                params["jornadas"] = "9"  # 9 = Teletrabajo (100% remoto) en el facet del sitio
+                referer += "?jornadas=9"
+            resp = requests.get(
+                TRABAJANDO_SEARCH_URL,
+                headers={**HEADERS, "Referer": referer},
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("ofertas", []):
+                titulo = item.get("nombreCargo", "")
+                modalidad = (item.get("nombreJornada") or "").strip().lower()
+                remota = modalidad == "teletrabajo"
+                slug = slugify_ascii(titulo)
+                link = f"https://www.trabajando.cl/trabajo/{item['idOferta']}-{slug}"
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo,
+                        "empresa": item.get("nombreEmpresa", "") or "",
+                        "remota": remota,
+                        "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"Trabajando.cl, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "Trabajando.cl",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# ChileTrabajos
+# ---------------------------------------------------------------------------
+
+CHILETRABAJOS_BASE_URL = "https://www.chiletrabajos.cl"
+CHILETRABAJOS_SEÑAL_REMOTO = "completamente desde tu casa"
+
+
+def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → ChileTrabajos / keyword: {keyword}")
+            resp = requests.get(
+                f"{CHILETRABAJOS_BASE_URL}/encuentra-un-empleo",
+                headers=HEADERS,
+                params={"2": keyword, "action": "search"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select("div.job-item"):
+                title_a = card.select_one("h2.title a")
+                if not title_a:
+                    continue
+                titulo = title_a.get_text(strip=True)
+                link = urljoin(CHILETRABAJOS_BASE_URL, title_a.get("href", ""))
+
+                meta = card.select_one("h3.meta")
+                empresa = meta.get_text(" ", strip=True).split(",")[0].strip() if meta else ""
+
+                remota = any(
+                    CHILETRABAJOS_SEÑAL_REMOTO in (icono.get("title") or "")
+                    for icono in card.select("a.icon-beneficio")
+                )
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": empresa, "remota": remota, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"ChileTrabajos, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "ChileTrabajos",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn (endpoint público "jobs-guest", sin login — no oficial)
+# ---------------------------------------------------------------------------
+
+LINKEDIN_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+
+
+def escanear_linkedin(keywords: list[str], require_remote: bool, location: str = "Chile", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → LinkedIn / keyword: {keyword} (location={location})")
+            params = {"keywords": keyword, "location": location, "start": "0"}
+            if require_remote:
+                params["f_WT"] = "2"
+            resp = requests.get(
+                LINKEDIN_SEARCH_URL,
+                headers=HEADERS,
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select("div.base-search-card"):
+                title_el = card.select_one("h3.base-search-card__title")
+                link_el = card.select_one("a.base-card__full-link")
+                if not title_el or not link_el:
+                    continue
+                titulo = title_el.get_text(strip=True)
+                link = link_el.get("href", "").split("?")[0]
+                empresa_el = card.select_one("h4.base-search-card__subtitle")
+                empresa = empresa_el.get_text(strip=True) if empresa_el else ""
+
+                if link not in candidatas:
+                    candidatas[link] = {"titulo": titulo, "empresa": empresa, "keywords": {keyword}}
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"LinkedIn, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        # Con require_remote=True, f_WT=2 ya filtró por remoto en la
+        # búsqueda; sin ese filtro no sabemos la modalidad por tarjeta,
+        # así que queda sin dato ("?") en vez de asumir remoto.
+        fila = {
+            "sitio": "LinkedIn",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if require_remote else "?",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# Registro de sitios por país
+# ---------------------------------------------------------------------------
+# Para agregar un país nuevo: escribir sus funciones escanear_<sitio>()
+# (mismo contrato: (keywords, require_remote[, location]) -> list[dict]
+# con las claves de CSV_FIELDS salvo "sitio", que se completa acá), sumarlas
+# a SITIOS, y agregar la entrada correspondiente en PAISES.
+
+SITIOS = [
+    {"id": "getonbrd", "nombre": "GetOnBrd", "fn": escanear_getonbrd},
+    {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo},
+    {"id": "laborum_cl", "nombre": "Laborum", "fn": escanear_laborum},
+    {"id": "trabajando_cl", "nombre": "Trabajando.cl", "fn": escanear_trabajando},
+    {"id": "chiletrabajos_cl", "nombre": "ChileTrabajos", "fn": escanear_chiletrabajos},
+    {"id": "linkedin", "nombre": "LinkedIn", "fn": escanear_linkedin, "usa_location": True},
+]
+SITIOS_POR_ID = {s["id"]: s for s in SITIOS}
+
+PAISES = {
+    "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "linkedin"],
+    # "Colombia": [...]  # pendiente: investigar sitios equivalentes (Computrabajo CO,
+    #                     ElEmpleo, Magneto, etc.) y agregar sus adaptadores acá.
+}
+
+
+def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: bool, pais: str,
+                     on_sitio=None, on_paso=None, on_error=None, on_oferta=None, debe_detener=None) -> tuple[list[dict], set]:
+    """Corre los adaptadores pedidos y devuelve (filas, nombres_de_sitios_corridos).
+    - on_sitio(nombre_sitio): se llama al empezar cada sitio.
+    - on_paso(nombre_sitio, etiqueta, i, total): progreso fino (por keyword o
+      categoría) dentro de un sitio.
+    - on_error(nombre_sitio, mensaje): se llama en cada request que falla,
+      sin cortar el scan (la GUI lo usa para mostrar un log de errores).
+    - on_oferta(fila): se llama por cada oferta que pasa los filtros (ya
+      trae "sitio" adentro). En GetOnBrd es oferta por oferta; en el resto
+      de los sitios llega en tanda al terminar ese sitio (agrupan
+      keywords_match por link antes de poder filtrar por remoto).
+    - debe_detener(): si existe y devuelve True, corta el scan lo antes
+      posible (entre un request y el siguiente)."""
+    sitios_habilitados = set()
+    filas = []
+    for sitio_id in ids_sitios:
+        if debe_detener and debe_detener():
+            break
+        sitio = SITIOS_POR_ID[sitio_id]
+        sitios_habilitados.add(sitio["nombre"])
+        if on_sitio:
+            on_sitio(sitio["nombre"])
+
+        nombre_sitio = sitio["nombre"]
+        _on_paso = (lambda etiqueta, i, total, _n=nombre_sitio: on_paso(_n, etiqueta, i, total)) if on_paso else None
+        _on_error = (lambda mensaje, _n=nombre_sitio: on_error(_n, mensaje)) if on_error else None
+
+        if sitio.get("usa_location"):
+            filas += sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta)
+        else:
+            filas += sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta)
+    return filas, sitios_habilitados
+
+
+class EscritorEstado:
+    """Escribe el progreso del scan a un archivo JSON en disco (atómico vía
+    escribir-y-renombrar), y ofrece un chequeo de "detener" basado en la
+    existencia de un archivo flag. Pensado para que el scan pueda correr
+    como proceso de sistema operativo aparte (via CLI) mientras una GUI
+    en otro proceso (o el mismo, reiniciado) lee ese archivo para mostrar
+    el progreso — así el scan sobrevive a un reinicio de la GUI."""
+
+    def __init__(self, status_file: str, detener_file: str | None, pais: str, sitios: list[str]):
+        self.status_file = status_file
+        self.detener_file = detener_file
+        self.estado = {
+            "corriendo": True,
+            "pid": os.getpid(),
+            "pais": pais,
+            "sitios": sitios,
+            "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
+            "log": [],
+            "ofertas_encontradas": [],
+            "resultado": None,
+        }
+        self._guardar()
+
+    def _guardar(self):
+        tmp = f"{self.status_file}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.estado, f, ensure_ascii=False)
+        os.replace(tmp, self.status_file)
+
+    def on_sitio(self, nombre_sitio):
+        self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": "", "i": 0, "total": 0}
+        self.estado["log"].append(f"--- {nombre_sitio} ---")
+        self._guardar()
+
+    def on_paso(self, nombre_sitio, etiqueta, i, total):
+        self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": etiqueta, "i": i, "total": total}
+        self.estado["log"].append(f"[{nombre_sitio}] {etiqueta}")
+        self._guardar()
+
+    def on_error(self, nombre_sitio, mensaje):
+        self.estado["log"].append(f"⚠ [{nombre_sitio}] {mensaje}")
+        self._guardar()
+
+    def on_oferta(self, fila):
+        self.estado["ofertas_encontradas"].append(fila)
+        self._guardar()
+
+    def debe_detener(self) -> bool:
+        return bool(self.detener_file and os.path.exists(self.detener_file))
+
+    def finalizar(self, filas: list[dict], filas_finales: list[dict]):
+        self.estado["corriendo"] = False
+        self.estado["resultado"] = {
+            "nuevas": len(filas),
+            "total": len(filas_finales),
+            "activas": len([f for f in filas_finales if f["activa"] == "SI"]),
+            "detenido": self.debe_detener(),
+        }
+        self._guardar()
+        if self.detener_file and os.path.exists(self.detener_file):
+            os.remove(self.detener_file)
+
+
+def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]:
+    """Escribe filas en OUTPUT_CSV conservando las filas ya guardadas de
+    sitios que no están en sitios_habilitados. Devuelve la lista completa
+    final (previas + nuevas).
+
+    La fecha_creacion de cada oferta se preserva entre corridas: si un link
+    ya existía (de cualquier corrida anterior, esté o no su sitio en esta
+    corrida), se mantiene su primera fecha vista en vez de pisarla con la
+    de hoy — así se puede saber hace cuánto está esa oferta, no solo
+    cuándo se vio por última vez."""
+    filas_previas = []
+    fecha_por_link = {}
+    if os.path.exists(OUTPUT_CSV):
+        with open(OUTPUT_CSV, newline="", encoding="utf-8") as f:
+            todas_previas = list(csv.DictReader(f))
+        filas_previas = [r for r in todas_previas if r["sitio"] not in sitios_habilitados]
+        fecha_por_link = {r["link"]: r["fecha_creacion"] for r in todas_previas if r.get("fecha_creacion")}
+
+    for fila in filas:
+        if fila["link"] in fecha_por_link:
+            fila["fecha_creacion"] = fecha_por_link[fila["link"]]
+
+    filas_finales = filas_previas + filas
+
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(filas_finales)
+
+    return filas_finales
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Scanner de ofertas de empleo multi-sitio/país")
+    parser.add_argument("--pais", default="Chile", help=f"País a escanear. Disponibles: {', '.join(PAISES)}")
+    parser.add_argument("--solo", help="Ids de sitio separados por coma para correr solo esos (ej: laborum_cl)")
+    parser.add_argument("--keywords-file", default=KEYWORDS_FILE_DEFAULT, help="Archivo con keywords, una por línea")
+    parser.add_argument("--generar-prompt-keywords", action="store_true",
+                         help="Imprime un prompt para pegar en Claude y generar keywords.txt; no escanea nada")
+    parser.add_argument("--perfil", default=PERFIL_FILE_DEFAULT, help="Archivo de perfil/CV para el prompt de keywords")
+    parser.add_argument("--incluir-no-remotas", action="store_true", help="No filtrar por remoto (por defecto solo trae remotas)")
+    parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
+    parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
+    args = parser.parse_args()
+
+    if args.generar_prompt_keywords:
+        generar_prompt_keywords(args.perfil)
+        return
+
+    if args.pais not in PAISES:
+        print(f"País no soportado: '{args.pais}'. Disponibles: {', '.join(PAISES)}", file=sys.stderr)
+        sys.exit(1)
+
+    ids_sitios = PAISES[args.pais]
+    if args.solo:
+        pedidos = {s.strip() for s in args.solo.split(",")}
+        desconocidos = pedidos - set(SITIOS_POR_ID)
+        if desconocidos:
+            print(f"Ids de sitio desconocidos: {', '.join(desconocidos)}. Disponibles: {', '.join(SITIOS_POR_ID)}", file=sys.stderr)
+            sys.exit(1)
+        ids_sitios = [i for i in ids_sitios if i in pedidos]
+
+    keywords = cargar_keywords(args.keywords_file)
+    require_remote = not args.incluir_no_remotas
+
+    print(f"[{datetime.now():%H:%M:%S}] Iniciando escaneo — país: {args.pais}, sitios: {', '.join(ids_sitios)}")
+    print(f"Keywords ({len(keywords)}): {', '.join(keywords)}")
+
+    nombres_sitios = [SITIOS_POR_ID[i]["nombre"] for i in ids_sitios]
+    escritor = EscritorEstado(args.status_file, args.detener_file, args.pais, nombres_sitios) if args.status_file else None
+
+    def _log_progreso(nombre_sitio):
+        print(f"[{datetime.now():%H:%M:%S}] {nombre_sitio}...")
+        if escritor:
+            escritor.on_sitio(nombre_sitio)
+
+    filas, sitios_habilitados = ejecutar_sitios(
+        ids_sitios, keywords, require_remote, args.pais,
+        on_sitio=_log_progreso,
+        on_paso=escritor.on_paso if escritor else None,
+        on_error=escritor.on_error if escritor else None,
+        on_oferta=escritor.on_oferta if escritor else None,
+        debe_detener=escritor.debe_detener if escritor else None,
+    )
+
+    for i, f in enumerate(filas, 1):
+        print(f"  [{i}/{len(filas)}] [{f['sitio']}] {f['titulo'][:60]} — {f['motivo']}")
+
+    filas_finales = guardar_resultados(filas, sitios_habilitados)
+
+    if escritor:
+        escritor.finalizar(filas, filas_finales)
+
+    activas = [f for f in filas_finales if f["activa"] == "SI"]
+    print(f"\n[{datetime.now():%H:%M:%S}] Listo. {len(activas)}/{len(filas_finales)} ofertas activas y relevantes en total ({len(filas)} nuevas de esta corrida).")
+    print(f"Resultado guardado en: {OUTPUT_CSV}")
+
+
+if __name__ == "__main__":
+    main()

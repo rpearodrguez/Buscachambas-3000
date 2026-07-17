@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+ofertas_empleos.csv
+ofertas_filtradas.csv
+ofertas_seleccionadas.txt
+scan_status.json
+detener.flag
+keywords_gui_actual.txt
+keywords.txt
+perfil.txt
+*.log
