@@ -856,6 +856,83 @@ def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None
 
 
 # ---------------------------------------------------------------------------
+# SENA / Agencia Pública de Empleo (Colombia, gobierno)
+# ---------------------------------------------------------------------------
+# Sitio público y lento — el round robin del scheduler ya ayuda a no
+# mandarle una ráfaga seguida de requests (queda intercalado con los demás
+# sitios). El link de la oferta funciona sin el jsessionid de sesión que
+# trae el botón "Postularme" en la página real.
+
+SENA_BASE_URL = "https://agenciapublicadeempleo.sena.edu.co"
+
+
+def escanear_sena(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → SENA / keyword: {keyword}")
+            resp = requests.get(
+                f"{SENA_BASE_URL}/spe-web/spe/public/buscadorVacante",
+                headers=HEADERS,
+                params={"solicitudId": keyword},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select("div.tdbuscador"):
+                id_el = card.select_one("h4.titulo-color")
+                title_el = card.select_one("h5.titulo-color")
+                if not id_el or not title_el:
+                    continue
+                oferta_id = id_el.get_text(strip=True)
+                titulo = title_el.get_text(strip=True)
+                link = f"{SENA_BASE_URL}/spe-web/spe/demanda/solicitud-sintesis/{oferta_id}"
+
+                # "No teletrabajo" contiene "teletrabajo" como substring, por
+                # eso se descarta explícitamente ese caso.
+                texto_card = card.get_text(" ", strip=True).lower()
+                remota = "teletrabajo" in texto_card and "no teletrabajo" not in texto_card
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": "", "remota": remota, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"SENA, keyword '{keyword}': {e}")
+        yield
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "SENA (Colombia)",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
 # Registro de sitios por país
 # ---------------------------------------------------------------------------
 # Para agregar un país nuevo: escribir sus funciones escanear_<sitio>()
@@ -877,12 +954,13 @@ SITIOS = [
     {"id": "getonbrd_co", "nombre": "GetOnBrd Colombia", "fn": escanear_getonbrd, "usa_location": True,
      "kwargs_extra": {"nombre_sitio": "GetOnBrd Colombia"}},
     {"id": "magneto_co", "nombre": "Magneto", "fn": escanear_magneto},
+    {"id": "sena_co", "nombre": "SENA (Colombia)", "fn": escanear_sena},
 ]
 SITIOS_POR_ID = {s["id"]: s for s in SITIOS}
 
 PAISES = {
     "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "linkedin"],
-    "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "magneto_co", "linkedin"],
+    "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "magneto_co", "sena_co", "linkedin"],
     # Bumeran Colombia y Konzerta quedan pendientes: son SPAs, falta encontrar
     # su API real (mismo proceso que se usó para Laborum/Trabajando.cl).
 }
