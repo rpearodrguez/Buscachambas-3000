@@ -127,6 +127,7 @@ with st.sidebar.expander("Keywords", expanded=True):
             f.write("\n".join(keywords) + "\n")
         st.success(f"Guardado en {scanner.KEYWORDS_FILE_DEFAULT}")
 
+
 with st.sidebar.expander("Generar keywords con Claude"):
     archivo_cv = st.file_uploader("Subir CV (PDF, DOCX, TXT o MD)", type=["pdf", "docx", "txt", "md"])
     perfil_manual = st.text_area("...o pega tu perfil / CV acá", height=120)
@@ -285,4 +286,4 @@ if os.path.exists(scanner.OUTPUT_CSV):
                 except requests.RequestException as e:
                     st.error(f"Error al descargar: {e}")
 else:
-    st.info("Todavía no hay resultados guardados — corré un scan primero.")
+    st.info("Todavía no hay resultados guardados — ejecuta un scan primero.")

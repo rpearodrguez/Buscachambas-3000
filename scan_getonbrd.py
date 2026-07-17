@@ -69,7 +69,7 @@ import re
 import argparse
 import unicodedata
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -200,6 +200,29 @@ GETONBRD_SEÑALES_REMOTO = [
     "trabajo remoto",
 ]
 
+# GetOnBrd no filtra por país en el servidor (confirmado: ?country=<x> no
+# cambia los resultados) — el listado es un pool único para toda
+# Latinoamérica. Para poder tener una versión "por país" hay que leer el
+# texto completo de cada oferta (que ya se descarga para el keyword-match)
+# y buscar ahí el nombre del país o de sus ciudades principales. Una
+# oferta también cuenta como válida para cualquier país si dice
+# explícitamente que está abierta a toda Latinoamérica.
+GETONBRD_CIUDADES_POR_PAIS = {
+    "Chile": ["chile", "santiago", "valparaíso", "valparaiso", "concepción", "concepcion",
+              "antofagasta", "temuco", "viña del mar", "vina del mar", "la serena"],
+    "Colombia": ["colombia", "bogotá", "bogota", "medellín", "medellin", "cali",
+                 "barranquilla", "cartagena", "bucaramanga", "pereira"],
+}
+GETONBRD_SEÑALES_LATAM_ABIERTO = [
+    "latinoamérica", "latinoamerica", "latam", "cualquier país de", "cualquier pais de",
+]
+# Todas las ciudades/países que reconocemos, juntas — para el caso "no
+# menciona ninguna ciudad/país conocido" (ej. la tarjeta solo dice
+# "Remoto" a secas, sin especificar dónde): se trata como abierta a
+# cualquier país en vez de excluirla, porque no hay ninguna señal de que
+# esté restringida a un país puntual.
+GETONBRD_TODAS_LAS_CIUDADES = {c for lista in GETONBRD_CIUDADES_POR_PAIS.values() for c in lista}
+
 
 def _es_link_de_oferta_getonbrd(href: str) -> bool:
     """Distingue un link de oferta puntual (/jobs/<categoria>/<slug>) de un
@@ -248,7 +271,7 @@ def _getonbrd_inspeccionar_oferta(link: str) -> dict:
     return {"activa": True, "motivo": "activa", "remota": remota, "texto": texto}
 
 
-def escanear_getonbrd(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str = "Chile", nombre_sitio: str = "GetOnBrd", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
     candidatas = {}
     total_categorias = len(GETONBRD_CATEGORIES)
     for i, categoria in enumerate(GETONBRD_CATEGORIES, 1):
@@ -284,8 +307,17 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, on_progreso=Non
         if require_remote and not info["remota"]:
             continue
 
+        señales_pais = GETONBRD_CIUDADES_POR_PAIS.get(location, [location.lower()])
+        coincide_pais = (
+            any(s in info["texto"] for s in señales_pais)
+            or any(s in info["texto"] for s in GETONBRD_SEÑALES_LATAM_ABIERTO)
+            or not any(c in info["texto"] for c in GETONBRD_TODAS_LAS_CIUDADES)
+        )
+        if not coincide_pais:
+            continue
+
         fila = {
-            "sitio": "GetOnBrd",
+            "sitio": nombre_sitio,
             "titulo": data["titulo"],
             "empresa": "",
             "keywords_match": ", ".join(matches),
@@ -303,13 +335,13 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, on_progreso=Non
 
 
 # ---------------------------------------------------------------------------
-# Computrabajo Chile
+# Computrabajo (misma plataforma en varios países — cambia el subdominio)
 # ---------------------------------------------------------------------------
 
-COMPUTRABAJO_BASE_URL = "https://cl.computrabajo.com"
+COMPUTRABAJO_BASE_URL = "https://cl.computrabajo.com"  # default, se puede pasar otro por base_url
 
 
-def escanear_computrabajo(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: str = COMPUTRABAJO_BASE_URL, nombre_sitio: str = "Computrabajo", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -318,9 +350,9 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, on_progreso
         if on_progreso:
             on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
         slug = slugify_ascii(keyword)
-        url = f"{COMPUTRABAJO_BASE_URL}/trabajo-de-{slug}"
+        url = f"{base_url}/trabajo-de-{slug}"
         try:
-            print(f"  → Computrabajo / keyword: {keyword}")
+            print(f"  → Computrabajo ({base_url}) / keyword: {keyword}")
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -331,7 +363,7 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, on_progreso
                     continue
                 titulo = title_a.get_text(strip=True)
                 href = title_a.get("href", "").split("#")[0]
-                link = urljoin(COMPUTRABAJO_BASE_URL, href)
+                link = urljoin(base_url, href)
 
                 empresa_a = card.select_one("[offer-grid-article-company-url]")
                 empresa = empresa_a.get_text(strip=True) if empresa_a else ""
@@ -357,7 +389,7 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, on_progreso
         if require_remote and not data["remota"]:
             continue
         fila = {
-            "sitio": "Computrabajo",
+            "sitio": nombre_sitio,
             "titulo": data["titulo"],
             "empresa": data["empresa"],
             "keywords_match": ", ".join(sorted(data["keywords"])),
@@ -676,6 +708,85 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
 
 
 # ---------------------------------------------------------------------------
+# ElEmpleo (Colombia)
+# ---------------------------------------------------------------------------
+
+ELEMPLEO_BASE_URL = "https://www.elempleo.com"
+
+
+def _elempleo_slug(keyword: str) -> str:
+    # A diferencia de los demás sitios, ElEmpleo preserva tildes en el slug
+    # (las codifica como %XX en vez de sacarlas), así que no usa
+    # slugify_ascii acá — solo reemplaza espacios y deja quote() codificar
+    # los caracteres no-ASCII.
+    return quote(keyword.strip().lower().replace(" ", "-"))
+
+
+def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        slug = _elempleo_slug(keyword)
+        # Combinar /trabajo-<keyword> y /modalidad-remoto en la misma URL
+        # filtra por ambos a la vez — no hace falta revisar cada tarjeta.
+        url = f"{ELEMPLEO_BASE_URL}/co/ofertas-empleo/trabajo-{slug}"
+        if require_remote:
+            url += "/modalidad-remoto"
+        try:
+            print(f"  → ElEmpleo / keyword: {keyword}")
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select("div.result-item"):
+                title_a = card.select_one("h2.item-title a.js-offer-title")
+                if not title_a:
+                    continue
+                titulo = title_a.get_text(strip=True)
+                href = title_a.get("href", "")
+                link = urljoin(ELEMPLEO_BASE_URL, href)
+
+                empresa_el = card.select_one("span.js-offer-company")
+                empresa = empresa_el.get_text(strip=True) if empresa_el else ""
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": empresa, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"ElEmpleo, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        # El filtro remoto ya se aplicó en la URL (si require_remote); no
+        # hay señal de modalidad confiable por tarjeta para el caso sin filtro.
+        fila = {
+            "sitio": "ElEmpleo",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if require_remote else "?",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
 # Registro de sitios por país
 # ---------------------------------------------------------------------------
 # Para agregar un país nuevo: escribir sus funciones escanear_<sitio>()
@@ -684,19 +795,25 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
 # a SITIOS, y agregar la entrada correspondiente en PAISES.
 
 SITIOS = [
-    {"id": "getonbrd", "nombre": "GetOnBrd", "fn": escanear_getonbrd},
-    {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo},
+    {"id": "getonbrd", "nombre": "GetOnBrd", "fn": escanear_getonbrd, "usa_location": True},
+    {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo,
+     "kwargs_extra": {"base_url": "https://cl.computrabajo.com"}},
     {"id": "laborum_cl", "nombre": "Laborum", "fn": escanear_laborum},
     {"id": "trabajando_cl", "nombre": "Trabajando.cl", "fn": escanear_trabajando},
     {"id": "chiletrabajos_cl", "nombre": "ChileTrabajos", "fn": escanear_chiletrabajos},
     {"id": "linkedin", "nombre": "LinkedIn", "fn": escanear_linkedin, "usa_location": True},
+    {"id": "computrabajo_co", "nombre": "Computrabajo Colombia", "fn": escanear_computrabajo,
+     "kwargs_extra": {"base_url": "https://co.computrabajo.com", "nombre_sitio": "Computrabajo Colombia"}},
+    {"id": "elempleo_co", "nombre": "ElEmpleo", "fn": escanear_elempleo},
+    {"id": "getonbrd_co", "nombre": "GetOnBrd Colombia", "fn": escanear_getonbrd, "usa_location": True,
+     "kwargs_extra": {"nombre_sitio": "GetOnBrd Colombia"}},
 ]
 SITIOS_POR_ID = {s["id"]: s for s in SITIOS}
 
 PAISES = {
     "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "linkedin"],
-    # "Colombia": [...]  # pendiente: investigar sitios equivalentes (Computrabajo CO,
-    #                     ElEmpleo, Magneto, etc.) y agregar sus adaptadores acá.
+    "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "linkedin"],
+    # Magneto, Elempleo detalle de descripción, etc. quedan pendientes si hace falta más cobertura.
 }
 
 
@@ -727,11 +844,12 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
         nombre_sitio = sitio["nombre"]
         _on_paso = (lambda etiqueta, i, total, _n=nombre_sitio: on_paso(_n, etiqueta, i, total)) if on_paso else None
         _on_error = (lambda mensaje, _n=nombre_sitio: on_error(_n, mensaje)) if on_error else None
+        kwargs_extra = sitio.get("kwargs_extra", {})
 
         if sitio.get("usa_location"):
-            filas += sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta)
+            filas += sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
         else:
-            filas += sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta)
+            filas += sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
     return filas, sitios_habilitados
 
 

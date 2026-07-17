@@ -58,21 +58,45 @@ Genera `ofertas_empleos.csv` con columnas:
 - `activa` (SI/NO)
 - `motivo`
 - `link`
+- `fecha_creacion` (fecha en que se vio por primera vez esa oferta — se
+  preserva entre corridas, no se pisa con la fecha del último scan)
 
 Correr sin `--solo` **no borra** resultados de sitios que no corrieron esa
 vez: el script conserva las filas ya guardadas de esos sitios y solo
 reemplaza las de los sitios que efectivamente corrieron.
 
-### Sitios soportados hoy (Chile)
+Cada sitio deduplica internamente por link: si la misma oferta aparece
+buscando varios keywords distintos, se guarda una sola vez con todos los
+keywords que matchearon juntos en `keywords_match`.
 
-| Sitio | Cómo busca |
-|---|---|
-| GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta |
-| Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta |
-| Laborum | SPA — API interna `POST /api/avisos/searchV2` |
-| Trabajando.cl | SPA — API interna `GET /api/searchjob` |
-| ChileTrabajos | Búsqueda por texto (`/encuentra-un-empleo?2=<keyword>`), modalidad en ícono de beneficio de la tarjeta |
-| LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial) |
+### Sitios soportados hoy
+
+| País | Sitio | Cómo busca |
+|---|---|---|
+| Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta |
+| Chile | Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta |
+| Chile | Laborum | SPA — API interna `POST /api/avisos/searchV2` |
+| Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob` |
+| Chile | ChileTrabajos | Búsqueda por texto (`/encuentra-un-empleo?2=<keyword>`), modalidad en ícono de beneficio de la tarjeta |
+| Colombia | Computrabajo Colombia | Misma plataforma que Chile, solo cambia el subdominio (`co.computrabajo.com`) |
+| Colombia | ElEmpleo | Búsqueda por texto (`/co/ofertas-empleo/trabajo-<keyword>`); agregando `/modalidad-remoto` al final filtra por remoto en el mismo request |
+| Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto |
+| Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país |
+
+**Nota sobre GetOnBrd por país**: confirmado que el sitio no filtra por país
+en el servidor (`?country=<x>` no cambia los resultados — es un pool único
+para toda Latinoamérica). "GetOnBrd Colombia" reutiliza la misma función
+que "GetOnBrd" Chile pero, además del keyword y remoto, revisa el texto
+completo de cada oferta buscando el nombre del país/sus ciudades
+principales (`GETONBRD_CIUDADES_POR_PAIS`). Una oferta también pasa el
+filtro si dice explícitamente que está abierta a toda Latinoamérica, o si
+no menciona ningún país/ciudad conocido (ej. tarjetas que solo dicen
+"Remoto" sin especificar dónde) — en esos casos se asume abierta en vez
+de excluirla. Esto significa que correr "GetOnBrd Colombia" vuelve a
+descargar y revisar las mismas ~700 ofertas que "GetOnBrd" Chile (mismos
+~20-25 min), solo que filtra distinto al final — es trabajo redundante
+pero no hay forma de evitarlo dado que el sitio no soporta filtrar por
+país en el servidor.
 
 Detalle técnico de cada endpoint/selector está documentado como docstring
 al inicio de `scan_getonbrd.py`.
@@ -84,9 +108,10 @@ python extraer_oferta.py "<link-de-la-oferta>"
 ```
 
 Baja la página y saca título + descripción completa lista para copiar al
-Project de Claude. Cubre GetOnBrd, Computrabajo y LinkedIn (Laborum y
-Trabajando.cl son SPAs sin la descripción completa en HTML estático —
-para esos dos, copiar el texto directo desde el navegador).
+Project de Claude. Cubre GetOnBrd, Computrabajo (Chile y Colombia),
+ChileTrabajos, ElEmpleo y LinkedIn (Laborum y Trabajando.cl son SPAs sin
+la descripción completa en HTML estático — para esos dos, copiar el
+texto directo desde el navegador).
 
 ## Editar búsqueda
 
@@ -104,16 +129,17 @@ para esos dos, copiar el texto directo desde el navegador).
 1. Escribir las funciones `escanear_<sitio>(keywords, require_remote)` de
    cada sitio de ese país (mismo contrato que las de Chile: devuelven
    `list[dict]` con las claves de `CSV_FIELDS` salvo `sitio`).
-2. Sumarlas a la lista `SITIOS`.
+2. Sumarlas a la lista `SITIOS`. Si la plataforma ya existe en otro país
+   (como Computrabajo), no hace falta reescribir la función — se le puede
+   pasar un `base_url`/`nombre_sitio` distinto vía `kwargs_extra` en el
+   registro (ver la entrada `computrabajo_co` como ejemplo).
 3. Agregar la entrada correspondiente en el dict `PAISES` con sus ids.
 
 LinkedIn ya es reutilizable para cualquier país (recibe `location` como
 parámetro) — no hace falta reescribirlo.
 
-**Pendiente**: Colombia — falta investigar sus sitios más usados
-(Computrabajo Colombia probablemente funciona igual que la versión
-chilena, ElEmpleo.com y Magneto hay que investigarlos desde cero, como
-hicimos acá con Laborum/Trabajando.cl).
+**Pendiente**: Magneto (Colombia) y otros países además de Chile/Colombia
+— mismo proceso de investigación que se usó para los sitios actuales.
 
 ## Limitaciones conocidas / mantenimiento
 

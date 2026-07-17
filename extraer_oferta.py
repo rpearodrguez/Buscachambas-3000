@@ -6,10 +6,11 @@ descarga la página y saca el texto completo y limpio (título, empresa,
 descripción) listo para pegar en el Project de Claude que arma
 currículums.
 
-Cubre GetOnBrd, Computrabajo, ChileTrabajos y LinkedIn (donde la
-descripción completa viene en el HTML). Laborum y Trabajando.cl son
-SPAs: no traen la descripción completa por request simple, así que para
-esos dos hay que copiar el texto directo desde el navegador.
+Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo
+y LinkedIn (donde la descripción completa viene en el HTML). Laborum y
+Trabajando.cl son SPAs: no traen la descripción completa por request
+simple, así que para esos dos hay que copiar el texto directo desde el
+navegador.
 
 USO:
     python extraer_oferta.py "<link-de-la-oferta>"
@@ -49,11 +50,17 @@ def _extraer_chiletrabajos(soup: BeautifulSoup) -> str:
     return parrafo.get_text("\n", strip=True) if parrafo else ""
 
 
+def _extraer_elempleo(soup: BeautifulSoup) -> str:
+    parrafo = soup.select_one("div.description-block p.mb-0")
+    return parrafo.get_text("\n", strip=True) if parrafo else ""
+
+
 EXTRACTORES = {
     "getonbrd.com": _extraer_getonbrd,
     "computrabajo.com": _extraer_computrabajo,
     "linkedin.com": _extraer_linkedin,
     "chiletrabajos.cl": _extraer_chiletrabajos,
+    "elempleo.com": _extraer_elempleo,
 }
 
 
