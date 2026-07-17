@@ -1247,7 +1247,22 @@ class EscritorEstado:
         tmp = f"{self.status_file}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.estado, f, ensure_ascii=False)
-        os.replace(tmp, self.status_file)
+
+        # En Windows, os.replace() puede tirar PermissionError si algo más
+        # (la GUI, típicamente) tiene el archivo destino abierto para
+        # lectura justo en ese instante — es una condición de carrera
+        # transitoria, no un error real. Reintentar con backoff corto en
+        # vez de dejar que tumbe el scan entero por una sola escritura de
+        # progreso que se puede reintentar sin problema.
+        for intento in range(5):
+            try:
+                os.replace(tmp, self.status_file)
+                return
+            except PermissionError:
+                if intento == 4:
+                    print(f"    ⚠ no se pudo actualizar {self.status_file} (archivo bloqueado, se sigue igual)", file=sys.stderr)
+                    return
+                time.sleep(0.05 * (intento + 1))
 
     def on_sitio(self, nombre_sitio):
         self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": "", "i": 0, "total": 0}
