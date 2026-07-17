@@ -193,7 +193,7 @@ if scan_corriendo:
         st.progress(0.0, text=p["sitio"] or "Iniciando...")
 
     log = estado_previo.get("log", [])
-    with st.expander(f"Ver log ({len(log)} líneas)", expanded=False):
+    with st.expander(f"Ver log ({len(log)} líneas)", expanded=False, key="log_expander"):
         st.code("\n".join(log[-300:]) or "(sin actividad todavía)", language="text")
 
     ofertas_en_curso = estado_previo.get("ofertas_encontradas", [])

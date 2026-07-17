@@ -1,6 +1,9 @@
 @echo off
 cd /d "%~dp0"
 
+echo Cerrando instancias previas de la GUI (si hay)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = 'streamlit.exe'\" | Where-Object { $_.CommandLine -match 'gui\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" 2>nul
+
 echo Verificando dependencias...
 python -c "import requests, bs4, streamlit, pandas, pypdf, docx, pyperclip" 2>nul
 if errorlevel 1 (
