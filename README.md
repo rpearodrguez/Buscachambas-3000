@@ -6,6 +6,30 @@ o que no son remotas, y arma un CSV único con todo. Incluye un segundo
 script para bajar el texto completo de una oferta puntual, listo para
 pegar en tu Project de Claude que arma currículums.
 
+## Instalación para no-programadores (Windows)
+
+Si no usas herramientas de desarrollo normalmente, esta es la vía más
+directa:
+
+1. Instalá **Python** desde [python.org/downloads](https://www.python.org/downloads/)
+   (botón amarillo grande "Download Python"). En la primera pantalla del
+   instalador, tildá la casilla **"Add python.exe to PATH"** antes de
+   darle a instalar — si te la saltás, el resto no va a funcionar.
+2. Descargá este proyecto: en GitHub, botón verde **"Code" → "Download ZIP"**,
+   y descomprimilo en cualquier carpeta.
+3. Adentro de esa carpeta, doble-click en **`iniciar_gui.cmd`**. La
+   primera vez va a tardar un poco instalando lo que necesita — es
+   normal. Después se va a abrir solo en el navegador.
+4. Elegí país y las palabras clave de tu búsqueda en el panel de la
+   izquierda, y hacé click en **"Buscar ofertas"**. Puede tardar varios
+   minutos — dejalo corriendo y volvé más tarde a revisar los
+   resultados en la tabla de abajo.
+
+Si Windows muestra una advertencia de seguridad al abrir el `.cmd`
+("Windows protegió su PC" / SmartScreen), es porque no está firmado
+digitalmente (cuesta dinero y no aplica para un proyecto personal) —
+click en "Más información" y después "Ejecutar de todas formas".
+
 ## Requisitos
 
 ```bash
