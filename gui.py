@@ -222,7 +222,26 @@ elif estado_previo and estado_previo.get("resultado"):
 
 if os.path.exists(scanner.OUTPUT_CSV):
     df = pd.read_csv(scanner.OUTPUT_CSV)
-    st.subheader(f"Resultados guardados ({len(df)} ofertas)")
+
+    col_titulo, col_limpiar = st.columns([4, 1])
+    with col_titulo:
+        st.subheader(f"Resultados guardados ({len(df)} ofertas)")
+    with col_limpiar:
+        if st.button("🗑️ Limpiar tabla"):
+            st.session_state.confirmar_limpiar = True
+
+    if st.session_state.get("confirmar_limpiar"):
+        st.warning("¿Seguro que quieres borrar todos los resultados guardados? No se puede deshacer.")
+        col_si, col_no = st.columns(2)
+        with col_si:
+            if st.button("Sí, borrar todo", type="primary"):
+                os.remove(scanner.OUTPUT_CSV)
+                st.session_state.confirmar_limpiar = False
+                st.rerun()
+        with col_no:
+            if st.button("Cancelar"):
+                st.session_state.confirmar_limpiar = False
+                st.rerun()
 
     col1, col2, col3 = st.columns(3)
     with col1:

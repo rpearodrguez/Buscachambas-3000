@@ -67,6 +67,7 @@ import sys
 import json
 import re
 import argparse
+import html
 import unicodedata
 from datetime import datetime
 from urllib.parse import urljoin, urlparse, quote
@@ -933,6 +934,97 @@ def escanear_sena(keywords: list[str], require_remote: bool, on_progreso=None, d
 
 
 # ---------------------------------------------------------------------------
+# BNE — Bolsa Nacional de Empleo (Chile, gobierno)
+# ---------------------------------------------------------------------------
+# API JSON pública, sin login: GET /data/ofertas/buscarListas?textoLibre=<kw>.
+# No tiene un filtro de modalidad separado (confirmado: no hay campo de
+# "remoto" en la respuesta ni en los facets de "clasificacionOfertas") —
+# se detecta buscando "remoto"/"teletrabajo" en título+descripción, texto
+# que ya viene completo en la respuesta (no hace falta visitar cada oferta).
+
+BNE_BASE_URL = "https://www.bne.cl"
+
+
+def _bne_parsear_fecha(fecha_str: str) -> str | None:
+    # "fecha" viene como "15/07/26" (DD/MM/AA)
+    try:
+        dia, mes, anio = fecha_str.split("/")
+        return f"20{anio}-{mes}-{dia}"
+    except (ValueError, AttributeError):
+        return None
+
+
+def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        try:
+            print(f"  → BNE / keyword: {keyword}")
+            resp = requests.get(
+                f"{BNE_BASE_URL}/data/ofertas/buscarListas",
+                headers={
+                    **HEADERS,
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                params={"mostrar": "empleo", "textoLibre": keyword, "numResultadosPorPagina": 10, "clasificarYPaginar": "true"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("paginaOfertas", {}).get("resultados", []):
+                titulo = html.unescape(item.get("titulo", ""))
+                descripcion = html.unescape(item.get("descripcion", "") or "")
+                empresa = html.unescape(item.get("empresa", "") or "")
+                codigo = item.get("codigo", "")
+                if not codigo:
+                    continue
+                link = f"{BNE_BASE_URL}/oferta/{codigo}"
+
+                texto = f"{titulo} {descripcion}".lower()
+                remota = "remoto" in texto or "teletrabajo" in texto
+                fecha = _bne_parsear_fecha(item.get("fecha", ""))
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": empresa, "remota": remota,
+                        "fecha": fecha, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except (requests.RequestException, ValueError) as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"BNE, keyword '{keyword}': {e}")
+        yield
+
+    filas = []
+    for link, data in candidatas.items():
+        if require_remote and not data["remota"]:
+            continue
+        fila = {
+            "sitio": "BNE (Chile)",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if data["remota"] else "NO",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": data["fecha"] or hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
 # Registro de sitios por país
 # ---------------------------------------------------------------------------
 # Para agregar un país nuevo: escribir sus funciones escanear_<sitio>()
@@ -955,11 +1047,12 @@ SITIOS = [
      "kwargs_extra": {"nombre_sitio": "GetOnBrd Colombia"}},
     {"id": "magneto_co", "nombre": "Magneto", "fn": escanear_magneto},
     {"id": "sena_co", "nombre": "SENA (Colombia)", "fn": escanear_sena},
+    {"id": "bne_cl", "nombre": "BNE (Chile)", "fn": escanear_bne},
 ]
 SITIOS_POR_ID = {s["id"]: s for s in SITIOS}
 
 PAISES = {
-    "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "linkedin"],
+    "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "bne_cl", "linkedin"],
     "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "magneto_co", "sena_co", "linkedin"],
     # Bumeran Colombia y Konzerta quedan pendientes: son SPAs, falta encontrar
     # su API real (mismo proceso que se usó para Laborum/Trabajando.cl).
