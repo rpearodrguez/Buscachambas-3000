@@ -787,6 +787,75 @@ def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=Non
 
 
 # ---------------------------------------------------------------------------
+# Magneto (Colombia)
+# ---------------------------------------------------------------------------
+
+MAGNETO_BASE_URL = "https://www.magneto365.com"
+
+
+def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+    candidatas = {}
+
+    for i, keyword in enumerate(keywords, 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"'{keyword}' — {len(candidatas)} ofertas encontradas", i, len(keywords))
+        slug = slugify_ascii(keyword)
+        # /buscar/remoto/<keyword> filtra por ambos (remoto + texto) en una
+        # sola request, igual que hicimos con ElEmpleo.
+        segmento_modalidad = "remoto/" if require_remote else ""
+        url = f"{MAGNETO_BASE_URL}/co/trabajos/buscar/{segmento_modalidad}{slug}"
+        try:
+            print(f"  → Magneto / keyword: {keyword}")
+            resp = requests.get(url, headers=HEADERS, timeout=25)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for card in soup.select('article[class*="magneto-ui-card-jobs"]'):
+                title_a = card.select_one("h2 a")
+                if not title_a:
+                    continue
+                titulo = title_a.get_text(strip=True)
+                link = urljoin(MAGNETO_BASE_URL, title_a.get("href", ""))
+
+                empresa_el = card.select_one("h3")
+                empresa = empresa_el.get_text(strip=True).split("|")[0].strip() if empresa_el else ""
+
+                if link not in candidatas:
+                    candidatas[link] = {
+                        "titulo": titulo, "empresa": empresa, "keywords": {keyword},
+                    }
+                else:
+                    candidatas[link]["keywords"].add(keyword)
+        except requests.RequestException as e:
+            print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
+            if on_error:
+                on_error(f"Magneto, keyword '{keyword}': {e}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    filas = []
+    for link, data in candidatas.items():
+        # El filtro remoto ya se aplicó en la URL (si require_remote); sin
+        # ese filtro no hay señal de modalidad confiable por tarjeta.
+        fila = {
+            "sitio": "Magneto",
+            "titulo": data["titulo"],
+            "empresa": data["empresa"],
+            "keywords_match": ", ".join(sorted(data["keywords"])),
+            "remota": "SI" if require_remote else "?",
+            "activa": "SI",
+            "motivo": "en resultados de búsqueda (activa)",
+            "link": link,
+            "fecha_creacion": hoy(),
+        }
+        filas.append(fila)
+        if on_oferta:
+            on_oferta(fila)
+    return filas
+
+
+# ---------------------------------------------------------------------------
 # Registro de sitios por país
 # ---------------------------------------------------------------------------
 # Para agregar un país nuevo: escribir sus funciones escanear_<sitio>()
@@ -807,13 +876,15 @@ SITIOS = [
     {"id": "elempleo_co", "nombre": "ElEmpleo", "fn": escanear_elempleo},
     {"id": "getonbrd_co", "nombre": "GetOnBrd Colombia", "fn": escanear_getonbrd, "usa_location": True,
      "kwargs_extra": {"nombre_sitio": "GetOnBrd Colombia"}},
+    {"id": "magneto_co", "nombre": "Magneto", "fn": escanear_magneto},
 ]
 SITIOS_POR_ID = {s["id"]: s for s in SITIOS}
 
 PAISES = {
     "Chile": ["getonbrd", "computrabajo_cl", "laborum_cl", "trabajando_cl", "chiletrabajos_cl", "linkedin"],
-    "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "linkedin"],
-    # Magneto, Elempleo detalle de descripción, etc. quedan pendientes si hace falta más cobertura.
+    "Colombia": ["computrabajo_co", "elempleo_co", "getonbrd_co", "magneto_co", "linkedin"],
+    # Bumeran Colombia y Konzerta quedan pendientes: son SPAs, falta encontrar
+    # su API real (mismo proceso que se usó para Laborum/Trabajando.cl).
 }
 
 

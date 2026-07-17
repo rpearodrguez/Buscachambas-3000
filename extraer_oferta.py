@@ -55,35 +55,57 @@ def _extraer_elempleo(soup: BeautifulSoup) -> str:
     return parrafo.get_text("\n", strip=True) if parrafo else ""
 
 
+def _extraer_magneto(soup: BeautifulSoup) -> str:
+    contenedor = soup.select_one('div[class*="JobOfferDetailContent_content"]')
+    return contenedor.get_text("\n", strip=True) if contenedor else ""
+
+
+def _titulo_magneto(soup: BeautifulSoup) -> str:
+    # Magneto no usa <h1> en la página de detalle — el título real es el
+    # primer <h6> dentro del contenedor de la descripción.
+    h6 = soup.select_one('div[class*="JobOfferDetailContent_content"] h6')
+    return h6.get_text(strip=True) if h6 else ""
+
+
 EXTRACTORES = {
     "getonbrd.com": _extraer_getonbrd,
     "computrabajo.com": _extraer_computrabajo,
     "linkedin.com": _extraer_linkedin,
     "chiletrabajos.cl": _extraer_chiletrabajos,
     "elempleo.com": _extraer_elempleo,
+    "magneto365.com": _extraer_magneto,
+}
+
+# Solo para sitios cuya página de detalle no usa <h1> para el título
+# (el fallback genérico en extraer() ya cubre el resto).
+TITULOS = {
+    "magneto365.com": _titulo_magneto,
 }
 
 
 def extraer(url: str) -> None:
     dominio = urlparse(url).netloc.replace("www.", "").replace("cl.", "")
-    extractor = None
-    for clave, fn in EXTRACTORES.items():
+    clave_match = None
+    for clave in EXTRACTORES:
         if clave in dominio:
-            extractor = fn
+            clave_match = clave
             break
 
-    if extractor is None:
+    if clave_match is None:
         print(f"Sitio no soportado para extracción automática: {dominio}")
         print("Laborum y Trabajando.cl son SPAs — copia el texto directo desde el navegador.")
         return
 
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp = requests.get(url, headers=HEADERS, timeout=25)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    titulo_el = soup.select_one("h1")
-    titulo = titulo_el.get_text(strip=True) if titulo_el else "(sin título detectado)"
-    descripcion = extractor(soup)
+    if clave_match in TITULOS:
+        titulo = TITULOS[clave_match](soup) or "(sin título detectado)"
+    else:
+        titulo_el = soup.select_one("h1")
+        titulo = titulo_el.get_text(strip=True) if titulo_el else "(sin título detectado)"
+    descripcion = EXTRACTORES[clave_match](soup)
 
     print(f"TÍTULO: {titulo}")
     print(f"LINK: {url}")

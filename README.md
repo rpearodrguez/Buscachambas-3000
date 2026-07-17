@@ -81,7 +81,14 @@ keywords que matchearon juntos en `keywords_match`.
 | Colombia | Computrabajo Colombia | Misma plataforma que Chile, solo cambia el subdominio (`co.computrabajo.com`) |
 | Colombia | ElEmpleo | Búsqueda por texto (`/co/ofertas-empleo/trabajo-<keyword>`); agregando `/modalidad-remoto` al final filtra por remoto en el mismo request |
 | Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto |
+| Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request |
 | Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país |
+
+**Sitios investigados y descartados/pendientes**: Indeed (bloquea con 403,
+protección anti-bot — no vale la pena insistir, además tiene poca
+cobertura en LATAM), Bumeran Colombia y Konzerta (son SPAs sin API
+identificada todavía — mismo proceso que se usó para Laborum si se
+quieren agregar más adelante).
 
 **Nota sobre GetOnBrd por país**: confirmado que el sitio no filtra por país
 en el servidor (`?country=<x>` no cambia los resultados — es un pool único
