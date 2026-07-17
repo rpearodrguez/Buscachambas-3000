@@ -79,9 +79,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 # Keywords por defecto si no existe keywords.txt (ver cargar_keywords()).
-# Calzan con el stack real de Richard (automatización, backup, soporte
-# técnico avanzado) — pensadas para Chile. Para otro perfil/país, generar
-# keywords.txt con --generar-prompt-keywords.
+# Stack de ejemplo (automatización, backup, soporte técnico avanzado) —
+# pensadas para Chile. Para otro perfil/país, generar keywords.txt con
+# --generar-prompt-keywords.
 DEFAULT_KEYWORDS = [
     "automatización",
     "python",
@@ -288,7 +288,7 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
             print(f"    ⚠ error en categoría '{categoria}': {e}", file=sys.stderr)
             if on_error:
                 on_error(mensaje)
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     total_ofertas = len(candidatas)
@@ -299,7 +299,7 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
             on_progreso(f"revisando: {data['titulo'][:40]}", i, total_ofertas)
 
         info = _getonbrd_inspeccionar_oferta(link)
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
         matches = [kw for kw in keywords if kw.lower() in info["texto"]]
         if not matches:
@@ -382,7 +382,7 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: s
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"Computrabajo, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -464,7 +464,7 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"Laborum, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -538,7 +538,7 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"Trabajando.cl, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -613,7 +613,7 @@ def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progres
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"ChileTrabajos, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -683,7 +683,7 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"LinkedIn, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -763,7 +763,7 @@ def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=Non
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"ElEmpleo, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -832,7 +832,7 @@ def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None
             print(f"    ⚠ error buscando '{keyword}': {e}", file=sys.stderr)
             if on_error:
                 on_error(f"Magneto, keyword '{keyword}': {e}")
-        time.sleep(REQUEST_DELAY_SECONDS)
+        yield
 
     filas = []
     for link, data in candidatas.items():
@@ -890,8 +890,15 @@ PAISES = {
 
 def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: bool, pais: str,
                      on_sitio=None, on_paso=None, on_error=None, on_oferta=None, debe_detener=None) -> tuple[list[dict], set]:
-    """Corre los adaptadores pedidos y devuelve (filas, nombres_de_sitios_corridos).
-    - on_sitio(nombre_sitio): se llama al empezar cada sitio.
+    """Corre los adaptadores pedidos en **round robin**: en vez de terminar
+    un sitio entero antes de pasar al siguiente, se le pide un request a
+    cada sitio por turno (cada escanear_<sitio>() es un generador que hace
+    yield después de cada request individual). Esto reparte la carga entre
+    sitios en vez de mandarle a uno solo una ráfaga larga de requests
+    seguidos — mismo delay total, pero cada sitio individual respira más
+    entre sus propios requests.
+
+    - on_sitio(nombre_sitio): se llama al arrancar el generador de cada sitio.
     - on_paso(nombre_sitio, etiqueta, i, total): progreso fino (por keyword o
       categoría) dentro de un sitio.
     - on_error(nombre_sitio, mensaje): se llama en cada request que falla,
@@ -901,26 +908,46 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
       de los sitios llega en tanda al terminar ese sitio (agrupan
       keywords_match por link antes de poder filtrar por remoto).
     - debe_detener(): si existe y devuelve True, corta el scan lo antes
-      posible (entre un request y el siguiente)."""
+      posible (entre un request y el siguiente, de cualquier sitio)."""
     sitios_habilitados = set()
-    filas = []
-    for sitio_id in ids_sitios:
-        if debe_detener and debe_detener():
-            break
-        sitio = SITIOS_POR_ID[sitio_id]
-        sitios_habilitados.add(sitio["nombre"])
-        if on_sitio:
-            on_sitio(sitio["nombre"])
+    generadores = []
 
+    for sitio_id in ids_sitios:
+        sitio = SITIOS_POR_ID[sitio_id]
         nombre_sitio = sitio["nombre"]
+        sitios_habilitados.add(nombre_sitio)
+        if on_sitio:
+            on_sitio(nombre_sitio)
+
         _on_paso = (lambda etiqueta, i, total, _n=nombre_sitio: on_paso(_n, etiqueta, i, total)) if on_paso else None
         _on_error = (lambda mensaje, _n=nombre_sitio: on_error(_n, mensaje)) if on_error else None
         kwargs_extra = sitio.get("kwargs_extra", {})
 
         if sitio.get("usa_location"):
-            filas += sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
+            gen = sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
         else:
-            filas += sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
+            gen = sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
+        generadores.append({"filas": [], "gen": gen})
+
+    activos = list(generadores)
+    while activos:
+        if debe_detener and debe_detener():
+            break
+        siguientes = []
+        for entry in activos:
+            try:
+                next(entry["gen"])
+                siguientes.append(entry)
+            except StopIteration as fin:
+                entry["filas"] = fin.value or []
+            time.sleep(REQUEST_DELAY_SECONDS)
+            if debe_detener and debe_detener():
+                break
+        activos = siguientes
+
+    filas = []
+    for entry in generadores:
+        filas += entry["filas"]
     return filas, sitios_habilitados
 
 

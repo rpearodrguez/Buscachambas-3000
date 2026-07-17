@@ -9,15 +9,21 @@ pegar en tu Project de Claude que arma currículums.
 ## Requisitos
 
 ```bash
-pip install requests beautifulsoup4 --break-system-packages
+pip install -r requirements.txt
 ```
+
+(o `pip install requests beautifulsoup4 --break-system-packages` si solo
+vas a usar la línea de comandos, sin GUI)
 
 ## GUI (opcional)
 
 ```bash
-pip install streamlit pandas pypdf python-docx pyperclip
 streamlit run gui.py
 ```
+
+En Windows, `iniciar_gui.cmd` hace lo mismo con doble-click: revisa si
+faltan dependencias, las instala solo si hace falta, y después abre la
+GUI.
 
 Abre una página local con: selección de país/sitios, edición de keywords
 (con botón para generar el prompt de Claude, subiendo el CV en PDF/DOCX/
@@ -126,7 +132,7 @@ texto directo desde el navegador).
   generar su contenido con `--generar-prompt-keywords`, pegando el
   prompt resultante en Claude.
 - Si no existe `keywords.txt`, se usa `DEFAULT_KEYWORDS` al inicio del
-  script (pre-cargada con el stack de Richard: automatización, python,
+  script (pre-cargada con un stack de ejemplo: automatización, python,
   selenium, platform engineer, soporte técnico, backup, data protection,
   tier 3, powershell).
 
@@ -155,9 +161,12 @@ parámetro) — no hace falta reescribirlo.
 - **APIs no oficiales**: Laborum, Trabajando.cl y LinkedIn se acceden vía
   endpoints internos/no documentados (no hay alternativa pública). Pueden
   cambiar o dejar de funcionar sin aviso.
-- **Rate limiting**: 1.5s de delay entre requests por sitio. Si algún
-  sitio empieza a bloquear el user-agent o la IP, hay que subir el delay
-  o rotar user-agents.
+- **Rate limiting**: 1.5s de delay entre requests, y los sitios se
+  escanean en **round robin** (un request por sitio por turno, no un
+  sitio entero seguido antes de pasar al siguiente) — así ningún sitio
+  individual recibe una ráfaga larga de requests seguidos, sin alargar
+  el tiempo total del scan. Si algún sitio empieza a bloquear el
+  user-agent o la IP igual, hay que subir el delay o rotar user-agents.
 - **No hace login**: solo lee resultados públicos.
 
 ## Coordinación con el Project de Claude (armado de CVs)
