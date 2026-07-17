@@ -109,7 +109,10 @@ HEADERS = {
 
 REQUEST_DELAY_SECONDS = 1.5  # delay entre requests, para no saturar los sitios
 OUTPUT_CSV = "ofertas_empleos.csv"
-CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion"]
+CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion", "salario"]
+# Nota: "salario" queda vacío para los sitios que no lo expongan en su
+# búsqueda — csv.DictWriter completa con "" los campos que falten en una
+# fila, no hace falta que todos los sitios lo llenen.
 
 
 def hoy() -> str:
@@ -211,6 +214,33 @@ GETONBRD_SEÑALES_REMOTO = [
     "trabajo remoto",
 ]
 
+# GetOnBrd mezcla mes en inglés y en español según la categoría/oferta (ej.
+# "Jul 16" o "jul 16", o a veces "ago"/"dic" en vez de "aug"/"dec") y nunca
+# da el año — se asume el año actual, corrigiendo si eso da una fecha
+# futura (ej. ver "dic 20" en enero, que en realidad es del año pasado).
+GETONBRD_MESES = {
+    "ene": 1, "jan": 1, "feb": 2, "mar": 3, "abr": 4, "apr": 4, "may": 5,
+    "jun": 6, "jul": 7, "ago": 8, "aug": 8, "sep": 9, "oct": 10, "nov": 11,
+    "dic": 12, "dec": 12,
+}
+
+
+def _getonbrd_parsear_fecha(texto: str) -> str | None:
+    m = re.match(r"([A-Za-zñÑ]{3,4})\.?\s+(\d{1,2})", (texto or "").strip())
+    if not m:
+        return None
+    mes = GETONBRD_MESES.get(m.group(1).lower()[:3])
+    if not mes:
+        return None
+    ahora = datetime.now()
+    try:
+        fecha = datetime(ahora.year, mes, int(m.group(2)))
+    except ValueError:
+        return None
+    if fecha > ahora:
+        fecha = fecha.replace(year=ahora.year - 1)
+    return fecha.strftime("%Y-%m-%d")
+
 # GetOnBrd no filtra por país en el servidor (confirmado: ?country=<x> no
 # cambia los resultados) — el listado es un pool único para toda
 # Latinoamérica. Para poder tener una versión "por país" hay que leer el
@@ -256,11 +286,34 @@ def _getonbrd_ofertas_categoria(categoria: str) -> list[dict]:
         href = card.get("href", "")
         if not href or not _es_link_de_oferta_getonbrd(href):
             continue
-        titulo = card.get_text(strip=True)
+
+        # La tarjeta trae título/empresa/fecha/sueldo en elementos propios
+        # (h4.results-list-title, etc.) — si esa estructura no aparece
+        # (cambio de layout del sitio), cae de vuelta a todo el texto del
+        # link como título, igual que antes.
+        titulo_el = card.select_one("h4.results-list-title strong")
+        titulo = titulo_el.get_text(strip=True) if titulo_el else card.get_text(strip=True)
         if not titulo:
             continue
         link = urljoin(GETONBRD_BASE_URL, href)
-        ofertas.append({"titulo": titulo, "link": link})
+
+        empresa_el = card.select_one("div.results-list-info div.size0 strong")
+        empresa = empresa_el.get_text(strip=True) if empresa_el else ""
+
+        fecha_el = card.select_one("div.results-secondary.hide-on-mobile div.opacity-half.size0")
+        fecha = _getonbrd_parsear_fecha(fecha_el.get_text(strip=True)) if fecha_el else None
+
+        salario = ""
+        icono_salario = card.select_one("i.icon-money-bill")
+        if icono_salario:
+            span_salario = icono_salario.find_next_sibling("span")
+            if span_salario:
+                salario = span_salario.get_text(strip=True)
+
+        ofertas.append({
+            "titulo": titulo, "link": link, "empresa": empresa,
+            "fecha": fecha, "salario": salario,
+        })
 
     return ofertas
 
@@ -351,13 +404,14 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
         fila = {
             "sitio": nombre_sitio,
             "titulo": data["titulo"],
-            "empresa": "",
+            "empresa": data.get("empresa", ""),
             "keywords_match": ", ".join(matches),
             "remota": "SI" if info["remota"] else "NO",
             "activa": "SI" if info["activa"] else "NO",
             "motivo": info["motivo"],
             "link": link,
-            "fecha_creacion": hoy(),
+            "fecha_creacion": data.get("fecha") or hoy(),
+            "salario": data.get("salario", ""),
         }
         filas.append(fila)
         if on_oferta:
