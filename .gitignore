@@ -4,6 +4,7 @@ ofertas_empleos.csv
 ofertas_filtradas.csv
 ofertas_seleccionadas.txt
 scan_status.json
+scan_status.json.tmp
 detener.flag
 keywords_gui_actual.txt
 keywords.txt

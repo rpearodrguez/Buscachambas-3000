@@ -37,6 +37,7 @@ import extraer_oferta as extractor
 STATUS_FILE = "scan_status.json"
 DETENER_FILE = "detener.flag"
 KEYWORDS_GUI_FILE = "keywords_gui_actual.txt"
+SCAN_LOG_FILE = "scan_stdout.log"
 
 st.set_page_config(page_title="Job Scanner", layout="wide")
 st.title("Job Scanner")
@@ -52,6 +53,22 @@ def leer_estado_scan() -> dict | None:
         # se está escribiendo justo ahora (aunque el write es atómico vía
         # rename, por las dudas no reventar la página por una lectura rara)
         return None
+
+
+def proceso_sigue_vivo(pid: int) -> bool:
+    """Chequea si el PID del scan sigue corriendo de verdad. Si el proceso
+    murió (crash, se cerró la ventana, el equipo se durmió, etc.) sin
+    llegar a marcarse como terminado, scan_status.json queda con
+    "corriendo": true para siempre — sin este chequeo la GUI se queda
+    mostrando una barra de progreso que nunca va a avanzar."""
+    try:
+        resultado = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return str(pid) in resultado.stdout
+    except Exception:
+        return True  # si no se puede chequear, no bloquear la UI por las dudas
 
 
 def lanzar_scan(pais, ids_sitios, keywords, require_remote):
@@ -71,11 +88,16 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote):
     if not require_remote:
         cmd.append("--incluir-no-remotas")
 
+    # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
+    # excepción no manejada, scan_status.json queda con "corriendo": true
+    # para siempre (nunca llega a escribirse el resultado final) y sin este
+    # log no hay forma de saber por qué murió.
+    log = open(SCAN_LOG_FILE, "w", encoding="utf-8")
     subprocess.Popen(
         cmd,
         cwd=os.path.dirname(os.path.abspath(__file__)),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
     )
 
 
@@ -163,7 +185,9 @@ with st.sidebar.expander("Generar keywords con Claude"):
 # ---------------------------------------------------------------------------
 
 estado_previo = leer_estado_scan()
-scan_corriendo = bool(estado_previo and estado_previo.get("corriendo"))
+marcado_corriendo = bool(estado_previo and estado_previo.get("corriendo"))
+proceso_muerto = marcado_corriendo and not proceso_sigue_vivo(estado_previo.get("pid", -1))
+scan_corriendo = marcado_corriendo and not proceso_muerto
 
 col_buscar, col_detener = st.columns([1, 1])
 with col_buscar:
@@ -183,6 +207,22 @@ if click_detener:
     with open(DETENER_FILE, "w") as f:
         f.write("")
     st.warning("Deteniendo... termina la request en curso y corta ahí.")
+
+if proceso_muerto:
+    p = estado_previo["progreso"]
+    st.error(
+        f"El scan se cortó de forma inesperada (no fue el botón Detener) — "
+        f"se quedó en [{p.get('sitio', '?')}] {p.get('etiqueta', '')} "
+        f"({p.get('i', '?')}/{p.get('total', '?')}). "
+        f"Las ofertas que ya había encontrado en esta corrida se guardaron igual."
+    )
+    if os.path.exists(SCAN_LOG_FILE):
+        with open(SCAN_LOG_FILE, encoding="utf-8", errors="replace") as f:
+            contenido_log = f.read()
+        with st.expander("Ver log del proceso (stdout/stderr)", expanded=True):
+            st.code(contenido_log[-8000:] or "(log vacío)", language="text")
+    else:
+        st.caption("No hay scan_stdout.log — este scan se lanzó antes de que se agregara este log (versión vieja de gui.py).")
 
 if scan_corriendo:
     p = estado_previo["progreso"]
