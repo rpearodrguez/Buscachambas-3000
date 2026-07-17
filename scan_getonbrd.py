@@ -293,6 +293,7 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
         try:
             print(f"  → GetOnBrd / categoría: {categoria}")
             for oferta in _getonbrd_ofertas_categoria(categoria):
+                oferta["categoria_origen"] = categoria
                 candidatas.setdefault(oferta["link"], oferta)
         except requests.RequestException as e:
             mensaje = f"GetOnBrd, categoría '{categoria}': {e}"
@@ -301,9 +302,29 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
                 on_error(mensaje)
         yield
 
+    # Intercalar la revisión por categoría (una oferta de cada categoría
+    # por turno) en vez de agotar una categoría entera antes de pasar a la
+    # siguiente. No reduce la carga total a GetOnBrd (siguen siendo las
+    # mismas requests), pero si el scan se corta a mitad de camino deja
+    # cobertura pareja en todas las categorías en vez de completa en
+    # algunas y nula en el resto.
+    por_categoria: dict[str, list[tuple[str, dict]]] = {}
+    for link, data in candidatas.items():
+        por_categoria.setdefault(data.get("categoria_origen", ""), []).append((link, data))
+
+    orden_intercalado = []
+    colas = [cola for cola in por_categoria.values() if cola]
+    while colas:
+        siguientes_colas = []
+        for cola in colas:
+            orden_intercalado.append(cola.pop(0))
+            if cola:
+                siguientes_colas.append(cola)
+        colas = siguientes_colas
+
     filas = []
-    total_ofertas = len(candidatas)
-    for i, (link, data) in enumerate(candidatas.items(), 1):
+    total_ofertas = len(orden_intercalado)
+    for i, (link, data) in enumerate(orden_intercalado, 1):
         if debe_detener and debe_detener():
             break
         if on_progreso:
