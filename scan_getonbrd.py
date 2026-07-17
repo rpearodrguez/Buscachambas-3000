@@ -116,6 +116,16 @@ def hoy() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _parsear_fecha(fecha_str: str, formato: str) -> str | None:
+    """Convierte una fecha de un sitio (ej. '05-07-2026') a 'YYYY-MM-DD'
+    para que quede consistente en el CSV. Devuelve None si no se pudo
+    parsear, para que el llamador pueda caer de vuelta a hoy()."""
+    try:
+        return datetime.strptime(fecha_str.strip(), formato).strftime("%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return None
+
+
 def slugify_ascii(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
     texto = re.sub(r"[^a-zA-Z0-9]+", "-", texto).strip("-").lower()
@@ -451,12 +461,14 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
                 remota = "remoto" in modalidad
                 slug = slugify_ascii(f"{titulo} {empresa}")
                 link = f"https://www.laborum.cl/empleos/{slug}-{item['id']}.html"
+                fecha = _parsear_fecha(item.get("fechaPublicacion", ""), "%d-%m-%Y")
 
                 if link not in candidatas:
                     candidatas[link] = {
                         "titulo": titulo,
                         "empresa": empresa,
                         "remota": remota,
+                        "fecha": fecha,
                         "keywords": {keyword},
                     }
                 else:
@@ -480,7 +492,7 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
             "activa": "SI",
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
-            "fecha_creacion": hoy(),
+            "fecha_creacion": data["fecha"] or hoy(),
         }
         filas.append(fila)
         if on_oferta:
@@ -525,12 +537,17 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
                 remota = modalidad == "teletrabajo"
                 slug = slugify_ascii(titulo)
                 link = f"https://www.trabajando.cl/trabajo/{item['idOferta']}-{slug}"
+                # "fechaPublicacion" viene como "2026-07-02 09:33" — ya está
+                # en formato YYYY-MM-DD, solo hay que cortar la hora.
+                fecha_raw = (item.get("fechaPublicacion") or "").split(" ")[0]
+                fecha = fecha_raw if len(fecha_raw) == 10 else None
 
                 if link not in candidatas:
                     candidatas[link] = {
                         "titulo": titulo,
                         "empresa": item.get("nombreEmpresa", "") or "",
                         "remota": remota,
+                        "fecha": fecha,
                         "keywords": {keyword},
                     }
                 else:
@@ -554,7 +571,7 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
             "activa": "SI",
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
-            "fecha_creacion": hoy(),
+            "fecha_creacion": data["fecha"] or hoy(),
         }
         filas.append(fila)
         if on_oferta:
@@ -675,9 +692,11 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
                 link = link_el.get("href", "").split("?")[0]
                 empresa_el = card.select_one("h4.base-search-card__subtitle")
                 empresa = empresa_el.get_text(strip=True) if empresa_el else ""
+                fecha_el = card.select_one("time.job-search-card__listdate")
+                fecha = fecha_el.get("datetime") if fecha_el else None
 
                 if link not in candidatas:
-                    candidatas[link] = {"titulo": titulo, "empresa": empresa, "keywords": {keyword}}
+                    candidatas[link] = {"titulo": titulo, "empresa": empresa, "fecha": fecha, "keywords": {keyword}}
                 else:
                     candidatas[link]["keywords"].add(keyword)
         except requests.RequestException as e:
@@ -700,7 +719,7 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
             "activa": "SI",
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
-            "fecha_creacion": hoy(),
+            "fecha_creacion": data["fecha"] or hoy(),
         }
         filas.append(fila)
         if on_oferta:
@@ -895,14 +914,18 @@ def escanear_sena(keywords: list[str], require_remote: bool, on_progreso=None, d
                 titulo = title_el.get_text(strip=True)
                 link = f"{SENA_BASE_URL}/spe-web/spe/demanda/solicitud-sintesis/{oferta_id}"
 
+                texto_card_original = card.get_text(" ", strip=True)
                 # "No teletrabajo" contiene "teletrabajo" como substring, por
                 # eso se descarta explícitamente ese caso.
-                texto_card = card.get_text(" ", strip=True).lower()
+                texto_card = texto_card_original.lower()
                 remota = "teletrabajo" in texto_card and "no teletrabajo" not in texto_card
+
+                fecha_match = re.search(r"Publicado\s*(\d{2}/\d{2}/\d{4})", texto_card_original)
+                fecha = _parsear_fecha(fecha_match.group(1), "%d/%m/%Y") if fecha_match else None
 
                 if link not in candidatas:
                     candidatas[link] = {
-                        "titulo": titulo, "empresa": "", "remota": remota, "keywords": {keyword},
+                        "titulo": titulo, "empresa": "", "remota": remota, "fecha": fecha, "keywords": {keyword},
                     }
                 else:
                     candidatas[link]["keywords"].add(keyword)
@@ -925,7 +948,7 @@ def escanear_sena(keywords: list[str], require_remote: bool, on_progreso=None, d
             "activa": "SI",
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
-            "fecha_creacion": hoy(),
+            "fecha_creacion": data["fecha"] or hoy(),
         }
         filas.append(fila)
         if on_oferta:
