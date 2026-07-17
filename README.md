@@ -89,6 +89,7 @@ keywords que matchearon juntos en `keywords_match`.
 | Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto |
 | Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request |
 | Colombia | SENA (Agencia Pública de Empleo, gobierno) | Búsqueda por texto (`/spe-web/spe/public/buscadorVacante?solicitudId=<keyword>`), modalidad como texto plano "Teletrabajo"/"No teletrabajo" en la tarjeta. Sitio público y lento — sin extractor de descripción todavía (bajo volumen de ofertas remotas, no se priorizó) |
+| Chile | BNE (Bolsa Nacional de Empleo, gobierno) | API JSON pública sin login (`/data/ofertas/buscarListas?textoLibre=<keyword>`). Sin campo de modalidad — se detecta buscando "remoto"/"teletrabajo" en título+descripción, que ya vienen completos en la respuesta |
 | Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país |
 
 **Sitios descartados**: `bumeran.com.co` (redirige a `laborum.cl` incluso
@@ -122,9 +123,10 @@ python extraer_oferta.py "<link-de-la-oferta>"
 
 Baja la página y saca título + descripción completa lista para copiar al
 Project de Claude. Cubre GetOnBrd, Computrabajo (Chile y Colombia),
-ChileTrabajos, ElEmpleo y LinkedIn (Laborum y Trabajando.cl son SPAs sin
-la descripción completa en HTML estático — para esos dos, copiar el
-texto directo desde el navegador).
+ChileTrabajos, ElEmpleo, Magneto, BNE y LinkedIn. Pendientes: Laborum y
+Trabajando.cl (son SPAs sin la descripción completa en HTML estático —
+para esos dos, copiar el texto directo desde el navegador) y SENA
+(no priorizado, bajo volumen de ofertas remotas).
 
 ## Editar búsqueda
 

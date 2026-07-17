@@ -6,16 +6,17 @@ descarga la página y saca el texto completo y limpio (título, empresa,
 descripción) listo para pegar en el Project de Claude que arma
 currículums.
 
-Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo
-y LinkedIn (donde la descripción completa viene en el HTML). Laborum y
-Trabajando.cl son SPAs: no traen la descripción completa por request
-simple, así que para esos dos hay que copiar el texto directo desde el
-navegador.
+Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo,
+Magneto, BNE y LinkedIn (donde la descripción completa viene en el
+HTML). Laborum y Trabajando.cl son SPAs: no traen la descripción
+completa por request simple, así que para esos dos hay que copiar el
+texto directo desde el navegador (pendiente, ver memoria del proyecto).
 
 USO:
     python extraer_oferta.py "<link-de-la-oferta>"
 """
 
+import json
 import sys
 from urllib.parse import urlparse
 
@@ -67,6 +68,34 @@ def _titulo_magneto(soup: BeautifulSoup) -> str:
     return h6.get_text(strip=True) if h6 else ""
 
 
+def _bne_descripcion_soup(soup: BeautifulSoup) -> BeautifulSoup | None:
+    # BNE embebe un bloque schema.org JobPosting con la descripción
+    # completa como HTML dentro del JSON (no en el HTML de la página en
+    # sí) — el <h1> de la página mezcla título + categoría + ocupación
+    # todo junto, así que el título real también sale de acá.
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            # BNE mete \r\n literales (sin escapar) dentro del string JSON,
+            # que es inválido en modo estricto pero los navegadores lo toleran.
+            data = json.loads(script.string or "", strict=False)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if data.get("@type") == "JobPosting":
+            return BeautifulSoup(data.get("description", ""), "html.parser")
+    return None
+
+
+def _extraer_bne(soup: BeautifulSoup) -> str:
+    desc_soup = _bne_descripcion_soup(soup)
+    return desc_soup.get_text("\n", strip=True) if desc_soup else ""
+
+
+def _titulo_bne(soup: BeautifulSoup) -> str:
+    desc_soup = _bne_descripcion_soup(soup)
+    h1 = desc_soup.select_one("h1") if desc_soup else None
+    return h1.get_text(strip=True) if h1 else ""
+
+
 EXTRACTORES = {
     "getonbrd.com": _extraer_getonbrd,
     "computrabajo.com": _extraer_computrabajo,
@@ -74,12 +103,14 @@ EXTRACTORES = {
     "chiletrabajos.cl": _extraer_chiletrabajos,
     "elempleo.com": _extraer_elempleo,
     "magneto365.com": _extraer_magneto,
+    "bne.cl": _extraer_bne,
 }
 
 # Solo para sitios cuya página de detalle no usa <h1> para el título
 # (el fallback genérico en extraer() ya cubre el resto).
 TITULOS = {
     "magneto365.com": _titulo_magneto,
+    "bne.cl": _titulo_bne,
 }
 
 
