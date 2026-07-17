@@ -84,11 +84,11 @@ keywords que matchearon juntos en `keywords_match`.
 | Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request |
 | Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país |
 
-**Sitios investigados y descartados/pendientes**: Indeed (bloquea con 403,
-protección anti-bot — no vale la pena insistir, además tiene poca
-cobertura en LATAM), Bumeran Colombia y Konzerta (son SPAs sin API
-identificada todavía — mismo proceso que se usó para Laborum si se
-quieren agregar más adelante).
+**Sitios pendientes**: Konzerta (es una SPA sin API identificada todavía
+— mismo proceso que se usó para Laborum si se quiere agregar más
+adelante). `bumeran.com.co` se descartó: confirmado que redirige a
+`laborum.cl` incluso sin sesión iniciada, no es un sitio real aparte
+para Colombia.
 
 **Nota sobre GetOnBrd por país**: confirmado que el sitio no filtra por país
 en el servidor (`?country=<x>` no cambia los resultados — es un pool único
