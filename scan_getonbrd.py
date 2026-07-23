@@ -109,10 +109,11 @@ HEADERS = {
 
 REQUEST_DELAY_SECONDS = 1.5  # delay entre requests, para no saturar los sitios
 OUTPUT_CSV = "ofertas_empleos.csv"
-CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion", "salario"]
-# Nota: "salario" queda vacío para los sitios que no lo expongan en su
-# búsqueda — csv.DictWriter completa con "" los campos que falten en una
-# fila, no hace falta que todos los sitios lo llenen.
+CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion", "salario", "descripcion"]
+# Nota: "salario" y "descripcion" quedan vacíos para los sitios que no los
+# expongan — csv.DictWriter completa con "" los campos que falten en una
+# fila, no hace falta que todos los sitios lo llenen. "descripcion" solo
+# la llena GetOnBrd por ahora (ver _getonbrd_inspeccionar_oferta).
 
 
 def hoy() -> str:
@@ -318,21 +319,28 @@ def _getonbrd_ofertas_categoria(categoria: str) -> list[dict]:
     return ofertas
 
 
+def _getonbrd_extraer_descripcion(html_crudo: str) -> str:
+    soup = BeautifulSoup(html_crudo, "html.parser")
+    body = soup.select_one("div#job-body")
+    return body.get_text("\n", strip=True) if body else ""
+
+
 def _getonbrd_inspeccionar_oferta(link: str) -> dict:
     try:
         resp = requests.get(link, headers=HEADERS, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
-        return {"activa": False, "motivo": f"error de red: {e}", "remota": False, "texto": ""}
+        return {"activa": False, "motivo": f"error de red: {e}", "remota": False, "texto": "", "descripcion": ""}
 
     texto = resp.text.lower()
 
     for señal in GETONBRD_SEÑALES_CERRADA:
         if señal in texto:
-            return {"activa": False, "motivo": f"cerrada (detectado: '{señal}')", "remota": False, "texto": texto}
+            return {"activa": False, "motivo": f"cerrada (detectado: '{señal}')", "remota": False, "texto": texto, "descripcion": ""}
 
     remota = any(señal in texto for señal in GETONBRD_SEÑALES_REMOTO)
-    return {"activa": True, "motivo": "activa", "remota": remota, "texto": texto}
+    descripcion = _getonbrd_extraer_descripcion(resp.text)
+    return {"activa": True, "motivo": "activa", "remota": remota, "texto": texto, "descripcion": descripcion}
 
 
 def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str = "Chile", nombre_sitio: str = "GetOnBrd", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
@@ -412,6 +420,7 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
             "link": link,
             "fecha_creacion": data.get("fecha") or hoy(),
             "salario": data.get("salario", ""),
+            "descripcion": info.get("descripcion", ""),
         }
         filas.append(fila)
         if on_oferta:

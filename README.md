@@ -103,7 +103,7 @@ keywords que matchearon juntos en `keywords_match`.
 
 | País | Sitio | Cómo busca |
 |---|---|---|
-| Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta |
+| Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta (guarda la descripción completa en el CSV, columna `descripcion`, ya que de todos modos visita la página de cada oferta) |
 | Chile | Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta |
 | Chile | Laborum | SPA — API interna `POST /api/avisos/searchV2` |
 | Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob` |
