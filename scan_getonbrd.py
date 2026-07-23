@@ -136,6 +136,10 @@ def slugify_ascii(texto: str) -> str:
     return texto
 
 
+def _quitar_tags_html(texto: str) -> str:
+    return re.sub(r"<[^>]+>", "", texto).strip()
+
+
 def cargar_keywords(path: str = KEYWORDS_FILE_DEFAULT) -> list[str]:
     """Lee keywords desde un archivo (una por línea, '#' comenta la línea).
     Si no existe o queda vacío, usa DEFAULT_KEYWORDS."""
@@ -547,12 +551,15 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
                 link = f"https://www.laborum.cl/empleos/{slug}-{item['id']}.html"
                 fecha = _parsear_fecha(item.get("fechaPublicacion", ""), "%d-%m-%Y")
 
+                descripcion = item.get("detalle", "") or ""
+
                 if link not in candidatas:
                     candidatas[link] = {
                         "titulo": titulo,
                         "empresa": empresa,
                         "remota": remota,
                         "fecha": fecha,
+                        "descripcion": descripcion,
                         "keywords": {keyword},
                     }
                 else:
@@ -577,6 +584,7 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": data["fecha"] or hoy(),
+            "descripcion": data["descripcion"],
         }
         filas.append(fila)
         if on_oferta:
@@ -626,12 +634,19 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
                 fecha_raw = (item.get("fechaPublicacion") or "").split(" ")[0]
                 fecha = fecha_raw if len(fecha_raw) == 10 else None
 
+                # "descripcionOferta" es un snippet corto con el keyword
+                # resaltado en <strong> — no es la descripción completa,
+                # pero es lo único que trae el buscador sin visitar la
+                # oferta, así que se guarda igual (sin las tags).
+                descripcion = _quitar_tags_html(item.get("descripcionOferta", "") or "")
+
                 if link not in candidatas:
                     candidatas[link] = {
                         "titulo": titulo,
                         "empresa": item.get("nombreEmpresa", "") or "",
                         "remota": remota,
                         "fecha": fecha,
+                        "descripcion": descripcion,
                         "keywords": {keyword},
                     }
                 else:
@@ -656,6 +671,7 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": data["fecha"] or hoy(),
+            "descripcion": data["descripcion"],
         }
         filas.append(fila)
         if on_oferta:
@@ -705,9 +721,20 @@ def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progres
                     for icono in card.select("a.icon-beneficio")
                 )
 
+                # "p.description" trae un resumen truncado (termina en "…"
+                # y un link "Ver más" que se saca antes de extraer el texto).
+                descripcion_el = card.select_one("p.description")
+                descripcion = ""
+                if descripcion_el:
+                    ver_mas = descripcion_el.select_one("a.ver-mas-btn")
+                    if ver_mas:
+                        ver_mas.extract()
+                    descripcion = descripcion_el.get_text(strip=True)
+
                 if link not in candidatas:
                     candidatas[link] = {
-                        "titulo": titulo, "empresa": empresa, "remota": remota, "keywords": {keyword},
+                        "titulo": titulo, "empresa": empresa, "remota": remota,
+                        "descripcion": descripcion, "keywords": {keyword},
                     }
                 else:
                     candidatas[link]["keywords"].add(keyword)
@@ -731,6 +758,7 @@ def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progres
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": hoy(),
+            "descripcion": data["descripcion"],
         }
         filas.append(fila)
         if on_oferta:
@@ -857,9 +885,14 @@ def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=Non
                 empresa_el = card.select_one("span.js-offer-company")
                 empresa = empresa_el.get_text(strip=True) if empresa_el else ""
 
+                # El botón "Compartir" trae la descripción completa en un
+                # atributo data-*, sin necesidad de visitar la oferta.
+                desc_el = card.select_one("a[data-offer-description]")
+                descripcion = desc_el.get("data-offer-description", "").strip() if desc_el else ""
+
                 if link not in candidatas:
                     candidatas[link] = {
-                        "titulo": titulo, "empresa": empresa, "keywords": {keyword},
+                        "titulo": titulo, "empresa": empresa, "descripcion": descripcion, "keywords": {keyword},
                     }
                 else:
                     candidatas[link]["keywords"].add(keyword)
@@ -883,6 +916,7 @@ def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=Non
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": hoy(),
+            "descripcion": data["descripcion"],
         }
         filas.append(fila)
         if on_oferta:
@@ -1100,7 +1134,7 @@ def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, de
                 if link not in candidatas:
                     candidatas[link] = {
                         "titulo": titulo, "empresa": empresa, "remota": remota,
-                        "fecha": fecha, "keywords": {keyword},
+                        "fecha": fecha, "descripcion": descripcion, "keywords": {keyword},
                     }
                 else:
                     candidatas[link]["keywords"].add(keyword)
@@ -1124,6 +1158,7 @@ def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, de
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": data["fecha"] or hoy(),
+            "descripcion": data["descripcion"],
         }
         filas.append(fila)
         if on_oferta:

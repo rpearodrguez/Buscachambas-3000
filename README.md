@@ -101,20 +101,31 @@ keywords que matchearon juntos en `keywords_match`.
 
 ### Sitios soportados hoy
 
-| País | Sitio | Cómo busca |
-|---|---|---|
-| Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta (guarda la descripción completa en el CSV, columna `descripcion`, ya que de todos modos visita la página de cada oferta) |
-| Chile | Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta |
-| Chile | Laborum | SPA — API interna `POST /api/avisos/searchV2` |
-| Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob` |
-| Chile | ChileTrabajos | Búsqueda por texto (`/encuentra-un-empleo?2=<keyword>`), modalidad en ícono de beneficio de la tarjeta |
-| Colombia | Computrabajo Colombia | Misma plataforma que Chile, solo cambia el subdominio (`co.computrabajo.com`) |
-| Colombia | ElEmpleo | Búsqueda por texto (`/co/ofertas-empleo/trabajo-<keyword>`); agregando `/modalidad-remoto` al final filtra por remoto en el mismo request |
-| Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto |
-| Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request |
-| Colombia | SENA (Agencia Pública de Empleo, gobierno) | Búsqueda por texto (`/spe-web/spe/public/buscadorVacante?solicitudId=<keyword>`), modalidad como texto plano "Teletrabajo"/"No teletrabajo" en la tarjeta. Sitio público y lento — sin extractor de descripción todavía (bajo volumen de ofertas remotas, no se priorizó) |
-| Chile | BNE (Bolsa Nacional de Empleo, gobierno) | API JSON pública sin login (`/data/ofertas/buscarListas?textoLibre=<keyword>`). Sin campo de modalidad — se detecta buscando "remoto"/"teletrabajo" en título+descripción, que ya vienen completos en la respuesta |
-| Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país |
+| País | Sitio | Cómo busca | Descripción en CSV |
+|---|---|---|---|
+| Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta | Completa (visita cada oferta igual, así que se guarda de paso) |
+| Chile | Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta | No — la tarjeta de búsqueda no trae ningún resumen |
+| Chile | Laborum | SPA — API interna `POST /api/avisos/searchV2` | Completa (el JSON de búsqueda ya trae el campo `detalle`) |
+| Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob` | Snippet corto (~50 caracteres alrededor del keyword, es lo único que expone el buscador) |
+| Chile | ChileTrabajos | Búsqueda por texto (`/encuentra-un-empleo?2=<keyword>`), modalidad en ícono de beneficio de la tarjeta | Resumen truncado (el que se ve en la tarjeta, corta en "…") |
+| Colombia | Computrabajo Colombia | Misma plataforma que Chile, solo cambia el subdominio (`co.computrabajo.com`) | No — igual que Computrabajo Chile |
+| Colombia | ElEmpleo | Búsqueda por texto (`/co/ofertas-empleo/trabajo-<keyword>`); agregando `/modalidad-remoto` al final filtra por remoto en el mismo request | Completa (viene en un atributo `data-offer-description` oculto en la tarjeta) |
+| Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto | Completa (mismo mecanismo que GetOnBrd Chile) |
+| Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request | No — la tarjeta no trae resumen |
+| Colombia | SENA (Agencia Pública de Empleo, gobierno) | Búsqueda por texto (`/spe-web/spe/public/buscadorVacante?solicitudId=<keyword>`), modalidad como texto plano "Teletrabajo"/"No teletrabajo" en la tarjeta. Sitio público y lento | No priorizado (bajo volumen de ofertas remotas) |
+| Chile | BNE (Bolsa Nacional de Empleo, gobierno) | API JSON pública sin login (`/data/ofertas/buscarListas?textoLibre=<keyword>`). Sin campo de modalidad — se detecta buscando "remoto"/"teletrabajo" en título+descripción, que ya vienen completos en la respuesta | Completa (mismo campo que ya se usa para detectar "remoto") |
+| Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país | No — la tarjeta pública no trae descripción (habría que visitar cada oferta) |
+
+**Sobre la columna `descripcion`**: se llena solo con lo que cada sitio ya
+entrega en su propia respuesta de búsqueda/listado (JSON de una API, o
+texto/atributos ya presentes en la tarjeta HTML) — ningún sitio agrega una
+request extra por oferta solo para conseguir la descripción, salvo
+GetOnBrd, que de todas formas visita cada oferta para chequear si está
+cerrada o es remota. Por eso el nivel de detalle varía tanto entre sitios:
+desde la descripción completa (GetOnBrd, Laborum, ElEmpleo, BNE) hasta un
+snippet corto (Trabajando.cl, ChileTrabajos) o directamente vacío
+(Computrabajo, Magneto, LinkedIn, SENA), según lo que cada uno expone sin
+visitar el detalle.
 
 **Sitios descartados**: `bumeran.com.co` (redirige a `laborum.cl` incluso
 sin sesión iniciada, no es un sitio real aparte para Colombia) y
