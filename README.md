@@ -135,6 +135,13 @@ sitios (una request extra por oferta aceptada), así que queda apagado por
 defecto. Trabajando.cl y SENA no lo soportan todavía — no tienen un
 extractor de página de detalle funcionando (ver limitaciones abajo).
 
+GetOnBrd **no** tiene una variante "rápida" que se salte la visita por
+oferta: a diferencia del resto de los sitios, no tiene buscador por
+texto, así que la única forma de saber si una oferta matchea algún
+keyword, es remota o sigue activa es visitando su página — no es algo
+opcional como en los demás sitios, donde esa visita solo estaba de más
+para sacar la descripción.
+
 **Sitios descartados**: `bumeran.com.co` (redirige a `laborum.cl` incluso
 sin sesión iniciada, no es un sitio real aparte para Colombia) y
 Konzerta (es de Panamá — la ruta `/co` da 404 propio de la SPA, no tiene
