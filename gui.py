@@ -248,13 +248,24 @@ if scan_corriendo:
     p = estado_previo["progreso"]
     ofertas_en_curso = estado_previo.get("ofertas_encontradas", [])
 
-    st.metric("Ofertas encontradas hasta ahora", len(ofertas_en_curso))
-
     if p["total"]:
         texto_barra = f"[{p['sitio']}] {p['etiqueta']} ({p['i']}/{p['total']})"
         st.progress(min(p["i"] / p["total"], 1.0), text=texto_barra)
     else:
         st.progress(0.0, text=p["sitio"] or "Iniciando...")
+
+    # Barra aparte con el avance de TODO el proceso (todos los sitios que
+    # corren en paralelo por round robin combinados), no solo el sitio que
+    # justo escribió el último paso. El total sube a medida que cada sitio
+    # va revelando el suyo (ej. GetOnBrd pasa de 6 categorías a ~350+
+    # ofertas individuales una vez termina de recorrerlas) — es una
+    # estimación que se va afinando, no un total fijo desde el arranque.
+    pasos_completados = estado_previo.get("pasos_completados", 0)
+    pasos_totales = sum(estado_previo.get("pasos_totales_por_sitio", {}).values())
+    if pasos_totales:
+        st.progress(min(pasos_completados / pasos_totales, 1.0), text=f"Proceso general ({pasos_completados}/{pasos_totales})")
+    else:
+        st.progress(0.0, text="Proceso general — iniciando...")
 
     log = estado_previo.get("log", [])
     with st.expander(f"Ver log (últimas {min(len(log), MAX_LINEAS_LOG_VISIBLES)} de {len(log)} líneas)", expanded=False, key="log_expander"):

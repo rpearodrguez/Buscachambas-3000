@@ -1361,6 +1361,8 @@ class EscritorEstado:
             "pais": pais,
             "sitios": sitios,
             "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
+            "pasos_completados": 0,
+            "pasos_totales_por_sitio": {},
             "log": [],
             "errores": [],
             "ofertas_encontradas": [],
@@ -1400,6 +1402,13 @@ class EscritorEstado:
 
     def on_paso(self, nombre_sitio, etiqueta, i, total):
         self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": etiqueta, "i": i, "total": total}
+        # Avance global: un contador que nunca resetea (un paso más, sea
+        # de cualquier sitio) y el total conocido por sitio, que se va
+        # afinando a medida que cada uno revela el suyo (puede cambiar
+        # entre fases de un mismo sitio, ej. GetOnBrd: 6 categorías al
+        # principio, después ~350+ ofertas individuales).
+        self.estado["pasos_completados"] += 1
+        self.estado["pasos_totales_por_sitio"][nombre_sitio] = total
         self._log(f"[{nombre_sitio}] {etiqueta}")
         self._guardar()
 
