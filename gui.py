@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -207,7 +208,17 @@ if click_buscar:
         st.error("No hay keywords para buscar.")
     else:
         lanzar_scan(pais, sitios_elegidos, keywords, require_remote, descripcion_completa)
-        time.sleep(0.5)  # darle tiempo al subproceso a escribir el primer status
+        # Esperar a que el subproceso escriba su primer status.json (el
+        # arranque de Python en Windows puede tardar más que un sleep fijo
+        # corto) antes de refrescar la página — si el rerun cae antes de que
+        # exista "corriendo": true, esta página no entra al loop de
+        # auto-refresco de más abajo y se queda mostrando la tabla vieja
+        # hasta que el usuario interactúa de nuevo a mano.
+        for _ in range(20):
+            estado_nuevo = leer_estado_scan()
+            if estado_nuevo and estado_nuevo.get("corriendo"):
+                break
+            time.sleep(0.25)
         st.rerun()
 
 if click_detener:
@@ -231,8 +242,14 @@ if proceso_muerto:
     else:
         st.caption("No hay scan_stdout.log — este scan se lanzó antes de que se agregara este log (versión vieja de gui.py).")
 
+MAX_LINEAS_LOG_VISIBLES = 10
+
 if scan_corriendo:
     p = estado_previo["progreso"]
+    ofertas_en_curso = estado_previo.get("ofertas_encontradas", [])
+
+    st.metric("Ofertas encontradas hasta ahora", len(ofertas_en_curso))
+
     if p["total"]:
         texto_barra = f"[{p['sitio']}] {p['etiqueta']} ({p['i']}/{p['total']})"
         st.progress(min(p["i"] / p["total"], 1.0), text=texto_barra)
@@ -240,10 +257,9 @@ if scan_corriendo:
         st.progress(0.0, text=p["sitio"] or "Iniciando...")
 
     log = estado_previo.get("log", [])
-    with st.expander(f"Ver log ({len(log)} líneas)", expanded=False, key="log_expander"):
-        st.code("\n".join(log[-300:]) or "(sin actividad todavía)", language="text")
+    with st.expander(f"Ver log (últimas {min(len(log), MAX_LINEAS_LOG_VISIBLES)} de {len(log)} líneas)", expanded=False, key="log_expander"):
+        st.code("\n".join(log[-MAX_LINEAS_LOG_VISIBLES:]) or "(sin actividad todavía)", language="text")
 
-    ofertas_en_curso = estado_previo.get("ofertas_encontradas", [])
     if ofertas_en_curso:
         st.subheader(f"Ofertas encontradas en esta corrida ({len(ofertas_en_curso)})")
         st.dataframe(pd.DataFrame(ofertas_en_curso), width="stretch", height=300)
@@ -258,7 +274,7 @@ elif estado_previo and estado_previo.get("resultado"):
         st.warning(f"Detenido — {r['nuevas']} ofertas nuevas guardadas antes de parar. {r['activas']}/{r['total']} activas y relevantes en total.")
     else:
         st.success(f"Listo — {r['nuevas']} ofertas nuevas de esta corrida. {r['activas']}/{r['total']} activas y relevantes en total.")
-    errores = [l for l in estado_previo.get("log", []) if l.startswith("⚠")]
+    errores = estado_previo.get("errores", [])
     if errores:
         with st.expander(f"⚠ Hubo {len(errores)} error(es) durante el scan"):
             st.code("\n".join(errores), language="text")
@@ -314,7 +330,7 @@ if os.path.exists(scanner.OUTPUT_CSV):
     st.download_button(
         "Descargar CSV filtrado",
         df_filtrado.to_csv(index=False).encode("utf-8"),
-        "ofertas_filtradas.csv",
+        f"ofertas_filtradas_{datetime.now():%Y-%m-%d}.csv",
         "text/csv",
     )
 

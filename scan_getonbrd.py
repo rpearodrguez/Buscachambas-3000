@@ -336,11 +336,16 @@ def _getonbrd_ofertas_categoria(categoria: str) -> list[dict]:
             continue
 
         # La tarjeta trae título/empresa/fecha/sueldo en elementos propios
-        # (h4.results-list-title, etc.) — si esa estructura no aparece
-        # (cambio de layout del sitio), cae de vuelta a todo el texto del
-        # link como título, igual que antes.
+        # (h4.results-list-title, etc.). Si no aparece ese selector, el link
+        # no es una tarjeta de oferta real sino algo como un filtro de la
+        # barra lateral (ciudad/skill, ej. "Santiago (460)") que también
+        # matchea /jobs/ o /empleos/ con ≥3 segmentos — se descarta en vez
+        # de usar el texto del link como título (antes inflaba el conteo
+        # con filtros disfrazados de ofertas).
         titulo_el = card.select_one("h4.results-list-title strong")
-        titulo = titulo_el.get_text(strip=True) if titulo_el else card.get_text(strip=True)
+        if not titulo_el:
+            continue
+        titulo = titulo_el.get_text(strip=True)
         if not titulo:
             continue
         link = urljoin(GETONBRD_BASE_URL, href)
@@ -1342,6 +1347,11 @@ class EscritorEstado:
     en otro proceso (o el mismo, reiniciado) lee ese archivo para mostrar
     el progreso — así el scan sobrevive a un reinicio de la GUI."""
 
+    MAX_LINEAS_LOG = 300  # tope de líneas que se guardan (y por lo tanto se
+    # muestran) del log en vivo — sin esto, el status JSON crece sin límite
+    # durante todo el scan (un append por cada request, en los ~700+ pasos
+    # de GetOnBrd por ejemplo) y cada escritura reescribe el archivo entero.
+
     def __init__(self, status_file: str, detener_file: str | None, pais: str, sitios: list[str]):
         self.status_file = status_file
         self.detener_file = detener_file
@@ -1352,6 +1362,7 @@ class EscritorEstado:
             "sitios": sitios,
             "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
             "log": [],
+            "errores": [],
             "ofertas_encontradas": [],
             "resultado": None,
         }
@@ -1378,18 +1389,26 @@ class EscritorEstado:
                     return
                 time.sleep(0.05 * (intento + 1))
 
+    def _log(self, linea: str):
+        self.estado["log"].append(linea)
+        self.estado["log"] = self.estado["log"][-self.MAX_LINEAS_LOG:]
+
     def on_sitio(self, nombre_sitio):
         self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": "", "i": 0, "total": 0}
-        self.estado["log"].append(f"--- {nombre_sitio} ---")
+        self._log(f"--- {nombre_sitio} ---")
         self._guardar()
 
     def on_paso(self, nombre_sitio, etiqueta, i, total):
         self.estado["progreso"] = {"sitio": nombre_sitio, "etiqueta": etiqueta, "i": i, "total": total}
-        self.estado["log"].append(f"[{nombre_sitio}] {etiqueta}")
+        self._log(f"[{nombre_sitio}] {etiqueta}")
         self._guardar()
 
     def on_error(self, nombre_sitio, mensaje):
-        self.estado["log"].append(f"⚠ [{nombre_sitio}] {mensaje}")
+        # Los errores se guardan aparte del log general (que se cappea a
+        # MAX_LINEAS_LOG) para que el resumen final de errores no pierda
+        # los que quedaron viejos por delante de un scan largo.
+        self.estado["errores"].append(f"⚠ [{nombre_sitio}] {mensaje}")
+        self._log(f"⚠ [{nombre_sitio}] {mensaje}")
         self._guardar()
 
     def on_oferta(self, fila):
