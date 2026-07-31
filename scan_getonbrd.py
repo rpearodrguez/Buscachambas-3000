@@ -79,6 +79,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from extraer_oferta import EXTRACTORES as _EXTRACTORES_DETALLE
+from extraer_oferta import extraer_id_trabajando, extraer_trabajando
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -153,6 +154,19 @@ def _obtener_descripcion_detalle(link: str) -> str:
     cuando el modo --descripcion-completa está activo, en sitios cuyo
     buscador no trae ya la descripción en la respuesta de búsqueda."""
     dominio = urlparse(link).netloc.replace("www.", "").replace("cl.", "")
+
+    if "trabajando.cl" in dominio:
+        # Caso especial: no es un selector sobre HTML sino un fetch a la
+        # API de detalle por id (ver extraer_trabajando en extraer_oferta.py).
+        id_oferta = extraer_id_trabajando(link)
+        if not id_oferta:
+            return ""
+        try:
+            _, descripcion = extraer_trabajando(id_oferta)
+            return descripcion
+        except requests.RequestException:
+            return ""
+
     extractor = next((fn for clave, fn in _EXTRACTORES_DETALLE.items() if clave in dominio), None)
     if extractor is None:
         return ""
@@ -650,7 +664,7 @@ def escanear_laborum(keywords: list[str], require_remote: bool, on_progreso=None
 TRABAJANDO_SEARCH_URL = "https://www.trabajando.cl/api/searchjob"
 
 
-def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None, descripcion_completa: bool = False) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -708,10 +722,14 @@ def escanear_trabajando(keywords: list[str], require_remote: bool, on_progreso=N
                 on_error(f"Trabajando.cl, keyword '{keyword}': {e}")
         yield
 
+    aceptadas = {link: data for link, data in candidatas.items() if not require_remote or data["remota"]}
+    if descripcion_completa:
+        # Pisa el snippet truncado con la descripción completa de la API
+        # de detalle (ver _obtener_descripcion_detalle / extraer_trabajando).
+        yield from _completar_descripciones(aceptadas, on_progreso, debe_detener)
+
     filas = []
-    for link, data in candidatas.items():
-        if require_remote and not data["remota"]:
-            continue
+    for link, data in aceptadas.items():
         fila = {
             "sitio": "Trabajando.cl",
             "titulo": data["titulo"],
@@ -1240,14 +1258,14 @@ def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, de
 # trae ya la descripción completa (o solo trae un snippet corto) — para
 # esos, --descripcion-completa visita cada oferta aceptada y saca la
 # descripción real con los extractores de extraer_oferta.py. Laborum, BNE,
-# ElEmpleo y GetOnBrd no lo necesitan (ya la traen gratis); Trabajando.cl y
-# SENA quedan afuera por ahora (no tienen extractor de detalle todavía).
+# ElEmpleo y GetOnBrd no lo necesitan (ya la traen gratis); SENA queda
+# afuera por ahora (no tiene extractor de detalle todavía).
 SITIOS = [
     {"id": "getonbrd", "nombre": "GetOnBrd", "fn": escanear_getonbrd, "usa_location": True},
     {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo, "soporta_descripcion_completa": True,
      "kwargs_extra": {"base_url": "https://cl.computrabajo.com"}},
     {"id": "laborum_cl", "nombre": "Laborum", "fn": escanear_laborum},
-    {"id": "trabajando_cl", "nombre": "Trabajando.cl", "fn": escanear_trabajando},
+    {"id": "trabajando_cl", "nombre": "Trabajando.cl", "fn": escanear_trabajando, "soporta_descripcion_completa": True},
     {"id": "chiletrabajos_cl", "nombre": "ChileTrabajos", "fn": escanear_chiletrabajos, "soporta_descripcion_completa": True},
     {"id": "linkedin", "nombre": "LinkedIn", "fn": escanear_linkedin, "usa_location": True, "soporta_descripcion_completa": True},
     {"id": "computrabajo_co", "nombre": "Computrabajo Colombia", "fn": escanear_computrabajo, "soporta_descripcion_completa": True,

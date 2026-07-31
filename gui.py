@@ -147,11 +147,6 @@ with st.sidebar.expander("País y sitios", expanded=True):
         format_func=lambda i: scanner.SITIOS_POR_ID[i]["nombre"],
     )
     require_remote = st.checkbox("Solo ofertas remotas", value=scanner.REQUIRE_REMOTE)
-    descripcion_completa = st.checkbox(
-        "Descripción completa (más lento)",
-        value=False,
-        help="Visita cada oferta aceptada en Computrabajo, ChileTrabajos, LinkedIn y Magneto para sacar la descripción real. GetOnBrd, Laborum, BNE y ElEmpleo ya la traen sin esto.",
-    )
 
 with st.sidebar.expander("Keywords", expanded=True):
     keywords_default = "\n".join(scanner.cargar_keywords())
@@ -203,17 +198,23 @@ marcado_corriendo = bool(estado_previo and estado_previo.get("corriendo"))
 proceso_muerto = marcado_corriendo and not proceso_sigue_vivo(estado_previo.get("pid", -1))
 scan_corriendo = marcado_corriendo and not proceso_muerto
 
-col_buscar, col_detener = st.columns([1, 1])
+col_buscar, col_buscar_completa, col_detener = st.columns([1, 1, 1])
 with col_buscar:
     click_buscar = st.button("🔍 Buscar ofertas", type="primary", disabled=not sitios_elegidos or scan_corriendo)
+with col_buscar_completa:
+    click_buscar_completa = st.button(
+        "📄 Buscar con descripción completa",
+        disabled=not sitios_elegidos or scan_corriendo,
+        help="Para los sitios que lo soportan (todos salvo SENA), visita cada oferta aceptada para sacar su descripción real. Más lento que 'Buscar ofertas'.",
+    )
 with col_detener:
     click_detener = st.button("⏹ Detener", disabled=not scan_corriendo)
 
-if click_buscar:
+if click_buscar or click_buscar_completa:
     if not keywords:
         st.error("No hay keywords para buscar.")
     else:
-        lanzar_scan(pais, sitios_elegidos, keywords, require_remote, descripcion_completa)
+        lanzar_scan(pais, sitios_elegidos, keywords, require_remote, click_buscar_completa)
         # Esperar a que el subproceso escriba su primer status.json (el
         # arranque de Python en Windows puede tardar más que un sleep fijo
         # corto) antes de refrescar la página — si el rerun cae antes de que

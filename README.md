@@ -106,13 +106,13 @@ keywords que matchearon juntos en `keywords_match`.
 | Chile | GetOnBrd | No tiene buscador por texto — recorre categorías fijas y visita cada oferta | Completa (visita cada oferta igual, así que se guarda de paso) |
 | Chile | Computrabajo | Búsqueda por texto (`/trabajo-de-<keyword>`), modalidad en la tarjeta | Solo con `--descripcion-completa` |
 | Chile | Laborum | SPA — API interna `POST /api/avisos/searchV2` | Completa (el JSON de búsqueda ya trae el campo `detalle`) |
-| Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob` | Snippet corto (~50 caracteres alrededor del keyword, es lo único que expone el buscador — no soporta `--descripcion-completa` todavía) |
+| Chile | Trabajando.cl | SPA — API interna `GET /api/searchjob`; su API de detalle (`GET /api/ofertas/<id>`) sí trae la descripción completa | Snippet corto por defecto; completa con `--descripcion-completa` |
 | Chile | ChileTrabajos | Búsqueda por texto (`/encuentra-un-empleo?2=<keyword>`), modalidad en ícono de beneficio de la tarjeta | Resumen truncado por defecto; completa con `--descripcion-completa` |
 | Colombia | Computrabajo Colombia | Misma plataforma que Chile, solo cambia el subdominio (`co.computrabajo.com`) | Solo con `--descripcion-completa` |
 | Colombia | ElEmpleo | Búsqueda por texto (`/co/ofertas-empleo/trabajo-<keyword>`); agregando `/modalidad-remoto` al final filtra por remoto en el mismo request | Completa (viene en un atributo `data-offer-description` oculto en la tarjeta) |
 | Colombia | GetOnBrd Colombia | Mismo pool de ofertas que GetOnBrd Chile (ver nota abajo) filtrado por texto | Completa (mismo mecanismo que GetOnBrd Chile) |
 | Colombia | Magneto | Búsqueda por texto (`/co/trabajos/buscar/remoto/<keyword>`); agregando `remoto/` al principio filtra por remoto en el mismo request | Solo con `--descripcion-completa` |
-| Colombia | SENA (Agencia Pública de Empleo, gobierno) | Búsqueda por texto (`/spe-web/spe/public/buscadorVacante?solicitudId=<keyword>`), modalidad como texto plano "Teletrabajo"/"No teletrabajo" en la tarjeta. Sitio público y lento | No priorizado (bajo volumen de ofertas remotas, no soporta `--descripcion-completa`) |
+| Colombia | SENA (Agencia Pública de Empleo, gobierno) | Búsqueda por texto (`/spe-web/spe/public/buscadorVacante?solicitudId=<keyword>`), modalidad como texto plano "Teletrabajo"/"No teletrabajo" en la tarjeta. Sitio público y lento | No priorizado (bajo volumen de ofertas remotas) — el único sitio que no soporta `--descripcion-completa` |
 | Chile | BNE (Bolsa Nacional de Empleo, gobierno) | API JSON pública sin login (`/data/ofertas/buscarListas?textoLibre=<keyword>`). Sin campo de modalidad — se detecta buscando "remoto"/"teletrabajo" en título+descripción, que ya vienen completos en la respuesta | Completa (mismo campo que ya se usa para detectar "remoto") |
 | Cualquiera | LinkedIn | Endpoint público "jobs-guest" (sin login, no oficial), recibe `location` según el país | Solo con `--descripcion-completa` |
 
@@ -126,14 +126,16 @@ defecto varía tanto entre sitios: descripción completa (GetOnBrd, Laborum,
 ElEmpleo, BNE) vs. un snippet corto (Trabajando.cl, ChileTrabajos) vs.
 vacío (Computrabajo, Magneto, LinkedIn, SENA).
 
-**Modo `--descripcion-completa`** (flag en CLI, checkbox "Descripción
-completa (más lento)" en la GUI): para Computrabajo, ChileTrabajos,
-LinkedIn y Magneto, visita cada oferta que ya pasó el filtro de
-keyword/remoto y saca su descripción real con los mismos extractores de
-`extraer_oferta.py`, igual que ya hacía GetOnBrd. Alarga el scan de esos
-sitios (una request extra por oferta aceptada), así que queda apagado por
-defecto. Trabajando.cl y SENA no lo soportan todavía — no tienen un
-extractor de página de detalle funcionando (ver limitaciones abajo).
+**Modo `--descripcion-completa`** (flag en CLI; en la GUI es el botón
+"📄 Buscar con descripción completa" en vez de "🔍 Buscar ofertas"): para
+Computrabajo, ChileTrabajos, LinkedIn, Magneto y Trabajando.cl, visita
+cada oferta que ya pasó el filtro de keyword/remoto y saca su descripción
+real — con los extractores de `extraer_oferta.py` en los primeros
+cuatro, y con la API de detalle propia (`GET /api/ofertas/<id>`) en
+Trabajando.cl. Alarga el scan de esos sitios (una request extra por
+oferta aceptada), así que no es el botón por defecto. SENA es el único
+sitio que no lo soporta — no tiene un extractor de detalle funcionando
+(ver limitaciones abajo).
 
 GetOnBrd **no** tiene una variante "rápida" que se salte la visita por
 oferta: a diferencia del resto de los sitios, no tiene buscador por
@@ -171,12 +173,12 @@ al inicio de `scan_getonbrd.py`.
 python extraer_oferta.py "<link-de-la-oferta>"
 ```
 
-Baja la página y saca título + descripción completa lista para copiar al
-Project de Claude. Cubre GetOnBrd, Computrabajo (Chile y Colombia),
-ChileTrabajos, ElEmpleo, Magneto, BNE y LinkedIn. Pendientes: Laborum y
-Trabajando.cl (son SPAs sin la descripción completa en HTML estático —
-para esos dos, copiar el texto directo desde el navegador) y SENA
-(no priorizado, bajo volumen de ofertas remotas).
+Baja la página (o, en Trabajando.cl, llama a su API de detalle) y saca
+título + descripción completa lista para copiar al Project de Claude.
+Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo,
+Magneto, BNE, LinkedIn y Trabajando.cl. Laborum no lo necesita (su propia
+búsqueda ya trae la descripción completa). Pendiente: SENA (no
+priorizado, bajo volumen de ofertas remotas).
 
 ## Editar búsqueda
 

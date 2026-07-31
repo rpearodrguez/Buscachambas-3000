@@ -7,16 +7,16 @@ descripción) listo para pegar en el Project de Claude que arma
 currículums.
 
 Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo,
-Magneto, BNE y LinkedIn (donde la descripción completa viene en el
-HTML). Laborum y Trabajando.cl son SPAs: no traen la descripción
-completa por request simple, así que para esos dos hay que copiar el
-texto directo desde el navegador (pendiente, ver memoria del proyecto).
+Magneto, BNE, LinkedIn y Trabajando.cl. Laborum no lo necesita: su propia
+búsqueda ya trae la descripción completa (ver escanear_laborum en
+scan_getonbrd.py), así que nunca hace falta visitar la oferta aparte.
 
 USO:
     python extraer_oferta.py "<link-de-la-oferta>"
 """
 
 import json
+import re
 import sys
 from urllib.parse import urlparse
 
@@ -96,6 +96,29 @@ def _titulo_bne(soup: BeautifulSoup) -> str:
     return h1.get_text(strip=True) if h1 else ""
 
 
+TRABAJANDO_API_OFERTA = "https://www.trabajando.cl/api/ofertas/{id_oferta}"
+
+
+def extraer_id_trabajando(url: str) -> str | None:
+    m = re.search(r"/trabajo/(\d+)", url)
+    return m.group(1) if m else None
+
+
+def extraer_trabajando(id_oferta: str) -> tuple[str, str]:
+    """Trabajando.cl es una SPA — el HTML estático no trae la descripción
+    completa, pero su API de detalle sí (a diferencia de /api/searchjob,
+    que solo da un snippet corto con el keyword resaltado). No encaja en
+    el patrón EXTRACTORES (soup -> str) porque no es HTML: es un fetch a
+    una API distinta, keyed por id, que además ya trae el título."""
+    resp = requests.get(TRABAJANDO_API_OFERTA.format(id_oferta=id_oferta), headers=HEADERS, timeout=25)
+    resp.raise_for_status()
+    data = resp.json()
+    titulo = data.get("nombreCargo", "")
+    descripcion_html = data.get("descripcionOferta", "") or ""
+    descripcion = BeautifulSoup(descripcion_html, "html.parser").get_text("\n", strip=True)
+    return titulo, descripcion
+
+
 EXTRACTORES = {
     "getonbrd.com": _extraer_getonbrd,
     "computrabajo.com": _extraer_computrabajo,
@@ -116,6 +139,19 @@ TITULOS = {
 
 def extraer(url: str) -> None:
     dominio = urlparse(url).netloc.replace("www.", "").replace("cl.", "")
+
+    if "trabajando.cl" in dominio:
+        id_oferta = extraer_id_trabajando(url)
+        if not id_oferta:
+            print(f"No se pudo sacar el id de oferta del link: {url}")
+            return
+        titulo, descripcion = extraer_trabajando(id_oferta)
+        print(f"TÍTULO: {titulo or '(sin título detectado)'}")
+        print(f"LINK: {url}")
+        print("-" * 60)
+        print(descripcion if descripcion else "(no se pudo extraer la descripción — revisar selector)")
+        return
+
     clave_match = None
     for clave in EXTRACTORES:
         if clave in dominio:
@@ -124,7 +160,7 @@ def extraer(url: str) -> None:
 
     if clave_match is None:
         print(f"Sitio no soportado para extracción automática: {dominio}")
-        print("Laborum y Trabajando.cl son SPAs — copia el texto directo desde el navegador.")
+        print("Laborum no lo necesita (ver docstring del archivo).")
         return
 
     resp = requests.get(url, headers=HEADERS, timeout=25)
