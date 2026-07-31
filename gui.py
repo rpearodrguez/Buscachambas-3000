@@ -71,7 +71,7 @@ def proceso_sigue_vivo(pid: int) -> bool:
         return True  # si no se puede chequear, no bloquear la UI por las dudas
 
 
-def lanzar_scan(pais, ids_sitios, keywords, require_remote):
+def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa):
     with open(KEYWORDS_GUI_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(keywords) + "\n")
     if os.path.exists(DETENER_FILE):
@@ -87,6 +87,8 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote):
     ]
     if not require_remote:
         cmd.append("--incluir-no-remotas")
+    if descripcion_completa:
+        cmd.append("--descripcion-completa")
 
     # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
     # excepción no manejada, scan_status.json queda con "corriendo": true
@@ -138,6 +140,11 @@ with st.sidebar.expander("País y sitios", expanded=True):
         format_func=lambda i: scanner.SITIOS_POR_ID[i]["nombre"],
     )
     require_remote = st.checkbox("Solo ofertas remotas", value=scanner.REQUIRE_REMOTE)
+    descripcion_completa = st.checkbox(
+        "Descripción completa (más lento)",
+        value=False,
+        help="Visita cada oferta aceptada en Computrabajo, ChileTrabajos, LinkedIn y Magneto para sacar la descripción real. GetOnBrd, Laborum, BNE y ElEmpleo ya la traen sin esto.",
+    )
 
 with st.sidebar.expander("Keywords", expanded=True):
     keywords_default = "\n".join(scanner.cargar_keywords())
@@ -199,7 +206,7 @@ if click_buscar:
     if not keywords:
         st.error("No hay keywords para buscar.")
     else:
-        lanzar_scan(pais, sitios_elegidos, keywords, require_remote)
+        lanzar_scan(pais, sitios_elegidos, keywords, require_remote, descripcion_completa)
         time.sleep(0.5)  # darle tiempo al subproceso a escribir el primer status
         st.rerun()
 

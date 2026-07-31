@@ -16,6 +16,9 @@ USO:
     python scan_getonbrd.py --keywords-file keywords.txt        # usar keywords desde archivo
     python scan_getonbrd.py --generar-prompt-keywords            # imprime un prompt para pegar en Claude
                                                                    # y generar keywords.txt, no escanea nada
+    python scan_getonbrd.py --descripcion-completa                # más lento: visita cada oferta de
+                                                                   # Computrabajo/ChileTrabajos/LinkedIn/Magneto
+                                                                   # para sacar su descripción real
 
 CONFIGURACIÓN:
     - keywords.txt (opcional, una keyword por línea): si existe, se usa
@@ -75,6 +78,8 @@ from urllib.parse import urljoin, urlparse, quote
 import requests
 from bs4 import BeautifulSoup
 
+from extraer_oferta import EXTRACTORES as _EXTRACTORES_DETALLE
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -112,8 +117,9 @@ OUTPUT_CSV = "ofertas_empleos.csv"
 CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion", "salario", "descripcion"]
 # Nota: "salario" y "descripcion" quedan vacíos para los sitios que no los
 # expongan — csv.DictWriter completa con "" los campos que falten en una
-# fila, no hace falta que todos los sitios lo llenen. "descripcion" solo
-# la llena GetOnBrd por ahora (ver _getonbrd_inspeccionar_oferta).
+# fila, no hace falta que todos los sitios lo llenen. Ver README para el
+# detalle de qué nivel de descripción trae cada sitio (completa, snippet
+# corto, o nada salvo que se corra con --descripcion-completa).
 
 
 def hoy() -> str:
@@ -138,6 +144,43 @@ def slugify_ascii(texto: str) -> str:
 
 def _quitar_tags_html(texto: str) -> str:
     return re.sub(r"<[^>]+>", "", texto).strip()
+
+
+def _obtener_descripcion_detalle(link: str) -> str:
+    """Visita la página de detalle de una oferta y extrae su descripción
+    completa, reusando los mismos selectores que extraer_oferta.py (para
+    no duplicar el mapeo de sitio → selector en dos archivos). Solo se usa
+    cuando el modo --descripcion-completa está activo, en sitios cuyo
+    buscador no trae ya la descripción en la respuesta de búsqueda."""
+    dominio = urlparse(link).netloc.replace("www.", "").replace("cl.", "")
+    extractor = next((fn for clave, fn in _EXTRACTORES_DETALLE.items() if clave in dominio), None)
+    if extractor is None:
+        return ""
+    try:
+        resp = requests.get(link, headers=HEADERS, timeout=25)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return ""
+    return extractor(BeautifulSoup(resp.text, "html.parser"))
+
+
+def _completar_descripciones(aceptadas: dict, on_progreso, debe_detener):
+    """Fase 2 opcional (--descripcion-completa): visita cada oferta que ya
+    pasó los filtros de keyword/remoto y le agrega la descripción completa.
+    Generador para poder usarse con "yield from" dentro de otro generador
+    y mantener el mismo round robin por request que el resto del scan."""
+    total = len(aceptadas)
+    for i, (link, data) in enumerate(aceptadas.items(), 1):
+        if debe_detener and debe_detener():
+            break
+        if on_progreso:
+            on_progreso(f"descripción: {data['titulo'][:40]}", i, total)
+        # Si falla o no hay extractor para el dominio, se deja lo que ya
+        # había (snippet corto o vacío) en vez de pisarlo con "".
+        descripcion = _obtener_descripcion_detalle(link)
+        if descripcion:
+            data["descripcion"] = descripcion
+        yield
 
 
 def cargar_keywords(path: str = KEYWORDS_FILE_DEFAULT) -> list[str]:
@@ -440,7 +483,7 @@ def escanear_getonbrd(keywords: list[str], require_remote: bool, location: str =
 COMPUTRABAJO_BASE_URL = "https://cl.computrabajo.com"  # default, se puede pasar otro por base_url
 
 
-def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: str = COMPUTRABAJO_BASE_URL, nombre_sitio: str = "Computrabajo", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: str = COMPUTRABAJO_BASE_URL, nombre_sitio: str = "Computrabajo", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None, descripcion_completa: bool = False) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -483,10 +526,12 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: s
                 on_error(f"Computrabajo, keyword '{keyword}': {e}")
         yield
 
+    aceptadas = {link: data for link, data in candidatas.items() if not require_remote or data["remota"]}
+    if descripcion_completa:
+        yield from _completar_descripciones(aceptadas, on_progreso, debe_detener)
+
     filas = []
-    for link, data in candidatas.items():
-        if require_remote and not data["remota"]:
-            continue
+    for link, data in aceptadas.items():
         fila = {
             "sitio": nombre_sitio,
             "titulo": data["titulo"],
@@ -497,6 +542,7 @@ def escanear_computrabajo(keywords: list[str], require_remote: bool, base_url: s
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": hoy(),
+            "descripcion": data.get("descripcion", ""),
         }
         filas.append(fila)
         if on_oferta:
@@ -687,7 +733,7 @@ CHILETRABAJOS_BASE_URL = "https://www.chiletrabajos.cl"
 CHILETRABAJOS_SEÑAL_REMOTO = "completamente desde tu casa"
 
 
-def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None, descripcion_completa: bool = False) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -744,10 +790,13 @@ def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progres
                 on_error(f"ChileTrabajos, keyword '{keyword}': {e}")
         yield
 
+    aceptadas = {link: data for link, data in candidatas.items() if not require_remote or data["remota"]}
+    if descripcion_completa:
+        # Pisa el snippet truncado con la descripción completa de la página.
+        yield from _completar_descripciones(aceptadas, on_progreso, debe_detener)
+
     filas = []
-    for link, data in candidatas.items():
-        if require_remote and not data["remota"]:
-            continue
+    for link, data in aceptadas.items():
         fila = {
             "sitio": "ChileTrabajos",
             "titulo": data["titulo"],
@@ -773,7 +822,7 @@ def escanear_chiletrabajos(keywords: list[str], require_remote: bool, on_progres
 LINKEDIN_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
 
-def escanear_linkedin(keywords: list[str], require_remote: bool, location: str = "Chile", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_linkedin(keywords: list[str], require_remote: bool, location: str = "Chile", on_progreso=None, debe_detener=None, on_error=None, on_oferta=None, descripcion_completa: bool = False) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -817,6 +866,9 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
                 on_error(f"LinkedIn, keyword '{keyword}': {e}")
         yield
 
+    if descripcion_completa:
+        yield from _completar_descripciones(candidatas, on_progreso, debe_detener)
+
     filas = []
     for link, data in candidatas.items():
         # Con require_remote=True, f_WT=2 ya filtró por remoto en la
@@ -832,6 +884,7 @@ def escanear_linkedin(keywords: list[str], require_remote: bool, location: str =
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": data["fecha"] or hoy(),
+            "descripcion": data.get("descripcion", ""),
         }
         filas.append(fila)
         if on_oferta:
@@ -931,7 +984,7 @@ def escanear_elempleo(keywords: list[str], require_remote: bool, on_progreso=Non
 MAGNETO_BASE_URL = "https://www.magneto365.com"
 
 
-def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None) -> list[dict]:
+def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None, descripcion_completa: bool = False) -> list[dict]:
     candidatas = {}
 
     for i, keyword in enumerate(keywords, 1):
@@ -972,6 +1025,9 @@ def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None
                 on_error(f"Magneto, keyword '{keyword}': {e}")
         yield
 
+    if descripcion_completa:
+        yield from _completar_descripciones(candidatas, on_progreso, debe_detener)
+
     filas = []
     for link, data in candidatas.items():
         # El filtro remoto ya se aplicó en la URL (si require_remote); sin
@@ -986,6 +1042,7 @@ def escanear_magneto(keywords: list[str], require_remote: bool, on_progreso=None
             "motivo": "en resultados de búsqueda (activa)",
             "link": link,
             "fecha_creacion": hoy(),
+            "descripcion": data.get("descripcion", ""),
         }
         filas.append(fila)
         if on_oferta:
@@ -1174,20 +1231,26 @@ def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, de
 # con las claves de CSV_FIELDS salvo "sitio", que se completa acá), sumarlas
 # a SITIOS, y agregar la entrada correspondiente en PAISES.
 
+# "soporta_descripcion_completa": True marca los sitios cuyo buscador NO
+# trae ya la descripción completa (o solo trae un snippet corto) — para
+# esos, --descripcion-completa visita cada oferta aceptada y saca la
+# descripción real con los extractores de extraer_oferta.py. Laborum, BNE,
+# ElEmpleo y GetOnBrd no lo necesitan (ya la traen gratis); Trabajando.cl y
+# SENA quedan afuera por ahora (no tienen extractor de detalle todavía).
 SITIOS = [
     {"id": "getonbrd", "nombre": "GetOnBrd", "fn": escanear_getonbrd, "usa_location": True},
-    {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo,
+    {"id": "computrabajo_cl", "nombre": "Computrabajo", "fn": escanear_computrabajo, "soporta_descripcion_completa": True,
      "kwargs_extra": {"base_url": "https://cl.computrabajo.com"}},
     {"id": "laborum_cl", "nombre": "Laborum", "fn": escanear_laborum},
     {"id": "trabajando_cl", "nombre": "Trabajando.cl", "fn": escanear_trabajando},
-    {"id": "chiletrabajos_cl", "nombre": "ChileTrabajos", "fn": escanear_chiletrabajos},
-    {"id": "linkedin", "nombre": "LinkedIn", "fn": escanear_linkedin, "usa_location": True},
-    {"id": "computrabajo_co", "nombre": "Computrabajo Colombia", "fn": escanear_computrabajo,
+    {"id": "chiletrabajos_cl", "nombre": "ChileTrabajos", "fn": escanear_chiletrabajos, "soporta_descripcion_completa": True},
+    {"id": "linkedin", "nombre": "LinkedIn", "fn": escanear_linkedin, "usa_location": True, "soporta_descripcion_completa": True},
+    {"id": "computrabajo_co", "nombre": "Computrabajo Colombia", "fn": escanear_computrabajo, "soporta_descripcion_completa": True,
      "kwargs_extra": {"base_url": "https://co.computrabajo.com", "nombre_sitio": "Computrabajo Colombia"}},
     {"id": "elempleo_co", "nombre": "ElEmpleo", "fn": escanear_elempleo},
     {"id": "getonbrd_co", "nombre": "GetOnBrd Colombia", "fn": escanear_getonbrd, "usa_location": True,
      "kwargs_extra": {"nombre_sitio": "GetOnBrd Colombia"}},
-    {"id": "magneto_co", "nombre": "Magneto", "fn": escanear_magneto},
+    {"id": "magneto_co", "nombre": "Magneto", "fn": escanear_magneto, "soporta_descripcion_completa": True},
     {"id": "sena_co", "nombre": "SENA (Colombia)", "fn": escanear_sena},
     {"id": "bne_cl", "nombre": "BNE (Chile)", "fn": escanear_bne},
 ]
@@ -1202,7 +1265,8 @@ PAISES = {
 
 
 def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: bool, pais: str,
-                     on_sitio=None, on_paso=None, on_error=None, on_oferta=None, debe_detener=None) -> tuple[list[dict], set]:
+                     on_sitio=None, on_paso=None, on_error=None, on_oferta=None, debe_detener=None,
+                     descripcion_completa: bool = False) -> tuple[list[dict], set]:
     """Corre los adaptadores pedidos en **round robin**: en vez de terminar
     un sitio entero antes de pasar al siguiente, se le pide un request a
     cada sitio por turno (cada escanear_<sitio>() es un generador que hace
@@ -1221,7 +1285,11 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
       de los sitios llega en tanda al terminar ese sitio (agrupan
       keywords_match por link antes de poder filtrar por remoto).
     - debe_detener(): si existe y devuelve True, corta el scan lo antes
-      posible (entre un request y el siguiente, de cualquier sitio)."""
+      posible (entre un request y el siguiente, de cualquier sitio).
+    - descripcion_completa: si es True, los sitios marcados con
+      "soporta_descripcion_completa" visitan cada oferta aceptada para
+      sacar su descripción real (más lento). El resto de los sitios ni
+      siquiera recibe este kwarg — sus funciones no lo aceptan."""
     sitios_habilitados = set()
     generadores = []
 
@@ -1234,7 +1302,9 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
 
         _on_paso = (lambda etiqueta, i, total, _n=nombre_sitio: on_paso(_n, etiqueta, i, total)) if on_paso else None
         _on_error = (lambda mensaje, _n=nombre_sitio: on_error(_n, mensaje)) if on_error else None
-        kwargs_extra = sitio.get("kwargs_extra", {})
+        kwargs_extra = dict(sitio.get("kwargs_extra", {}))
+        if descripcion_completa and sitio.get("soporta_descripcion_completa"):
+            kwargs_extra["descripcion_completa"] = True
 
         if sitio.get("usa_location"):
             gen = sitio["fn"](keywords, require_remote, location=pais, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
@@ -1387,6 +1457,8 @@ def main():
                          help="Imprime un prompt para pegar en Claude y generar keywords.txt; no escanea nada")
     parser.add_argument("--perfil", default=PERFIL_FILE_DEFAULT, help="Archivo de perfil/CV para el prompt de keywords")
     parser.add_argument("--incluir-no-remotas", action="store_true", help="No filtrar por remoto (por defecto solo trae remotas)")
+    parser.add_argument("--descripcion-completa", action="store_true",
+                         help="Visita cada oferta aceptada en Computrabajo, ChileTrabajos, LinkedIn y Magneto para sacar la descripción real (más lento). GetOnBrd, Laborum, BNE y ElEmpleo ya la traen sin este flag")
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
     args = parser.parse_args()
@@ -1429,6 +1501,7 @@ def main():
         on_error=escritor.on_error if escritor else None,
         on_oferta=escritor.on_oferta if escritor else None,
         debe_detener=escritor.debe_detener if escritor else None,
+        descripcion_completa=args.descripcion_completa,
     )
 
     for i, f in enumerate(filas, 1):
