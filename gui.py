@@ -47,13 +47,19 @@ st.title("Job Scanner")
 def leer_estado_scan() -> dict | None:
     if not os.path.exists(STATUS_FILE):
         return None
-    try:
-        with open(STATUS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        # se está escribiendo justo ahora (aunque el write es atómico vía
-        # rename, por las dudas no reventar la página por una lectura rara)
-        return None
+    # El scan reescribe este archivo en cada request (más seguido todavía
+    # en la fase oferta por oferta), así que una lectura acá puede chocar
+    # con el rename atómico del lado del scanner — sin reintentar, esa
+    # única lectura fallida corta el loop de auto-refresco de la página
+    # para siempre (queda "corriendo" en falso aunque el scan siga vivo).
+    for intento in range(5):
+        try:
+            with open(STATUS_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            if intento == 4:
+                return None
+            time.sleep(0.05 * (intento + 1))
 
 
 def proceso_sigue_vivo(pid: int) -> bool:
