@@ -88,7 +88,8 @@ aplicación** (cuenta de Google → Seguridad → verificación en 2 pasos →
 Contraseñas de aplicaciones), no la clave normal. Después marca "Enviar
 correo al terminar el scan". Por consola:
 `python scan_getonbrd.py --email-a tu@correo.com`. El correo trae la
-duración, los totales y la lista de ofertas nuevas; si el scan se detiene
+duración, los totales y la lista de ofertas nuevas, y adjunta
+`ofertas_empleos.csv` con todos los resultados guardados; si el scan se detiene
 con el botón, también avisa. Si el envío falla, el scan igual queda
 guardado y la GUI muestra el error. Si el proceso crashea, no se manda
 correo.

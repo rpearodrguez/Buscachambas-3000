@@ -166,10 +166,11 @@ def config_email_completa(config: dict | None) -> bool:
     return bool(config) and all(config.get(k) for k in ("host", "port", "usuario", "password", "destinatario"))
 
 
-def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str) -> str | None:
-    """Manda el aviso de fin de scan. Devuelve None si salió bien, o el
-    mensaje de error — nunca lanza: un correo que falla no debe tumbar un
-    scan que ya terminó y guardó sus resultados."""
+def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str, adjuntos: list[str] | None = None) -> str | None:
+    """Manda el aviso de fin de scan, con los archivos de `adjuntos` (los
+    que existan). Devuelve None si salió bien, o el mensaje de error —
+    nunca lanza: un correo que falla no debe tumbar un scan que ya terminó
+    y guardó sus resultados."""
     config = cargar_config_email()
     if not config:
         return f"no hay {EMAIL_CONFIG_FILE} (o está mal formado) — copia email_config.example.json y complétalo"
@@ -179,6 +180,17 @@ def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str) -> str | None
         msg["From"] = config.get("remitente") or config["usuario"]
         msg["To"] = destinatario
         msg.set_content(cuerpo)
+
+        for ruta in adjuntos or []:
+            if not os.path.exists(ruta):
+                continue
+            with open(ruta, "rb") as f:
+                datos = f.read()
+            # BOM para que Excel abra el CSV en UTF-8 y no rompa las tildes.
+            if ruta.lower().endswith(".csv") and not datos.startswith(b"\xef\xbb\xbf"):
+                datos = b"\xef\xbb\xbf" + datos
+            msg.add_attachment(datos, maintype="text", subtype="csv" if ruta.lower().endswith(".csv") else "plain",
+                               filename=os.path.basename(ruta))
 
         puerto = int(config.get("port", 587))
         if puerto == 465:
@@ -212,7 +224,8 @@ def armar_correo_fin(pais: str, filas: list[dict], filas_finales: list[dict], du
         for f in filas[:MAX_OFERTAS_EN_CORREO]:
             lineas.append(f"- [{f['sitio']}] {f['titulo']} ({f['empresa']})\n  {f['link']}")
         if len(filas) > MAX_OFERTAS_EN_CORREO:
-            lineas.append(f"... y {len(filas) - MAX_OFERTAS_EN_CORREO} más en {OUTPUT_CSV}.")
+            lineas.append(f"... y {len(filas) - MAX_OFERTAS_EN_CORREO} más en el CSV adjunto.")
+    lineas += ["", f"Adjunto: {OUTPUT_CSV} con todos los resultados guardados."]
     return asunto, "\n".join(lineas)
 
 
@@ -1665,7 +1678,7 @@ def main():
         detenido = escritor.estado["resultado"]["detenido"] if escritor else False
         errores = escritor.estado["errores"] if escritor else []
         asunto, cuerpo = armar_correo_fin(args.pais, filas, filas_finales, duracion, detenido, errores)
-        error_correo = enviar_correo_fin(args.email_a, asunto, cuerpo)
+        error_correo = enviar_correo_fin(args.email_a, asunto, cuerpo, adjuntos=[OUTPUT_CSV])
         if error_correo:
             print(f"⚠ No se pudo enviar el correo a {args.email_a}: {error_correo}", file=sys.stderr)
         else:
