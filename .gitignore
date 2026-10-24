@@ -10,3 +10,5 @@ keywords_gui_actual.txt
 keywords.txt
 perfil.txt
 *.log
+*.lnk
+email_config.json

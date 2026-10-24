@@ -78,7 +78,7 @@ def proceso_sigue_vivo(pid: int) -> bool:
         return True  # si no se puede chequear, no bloquear la UI por las dudas
 
 
-def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa):
+def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa, email_a=None):
     with open(KEYWORDS_GUI_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(keywords) + "\n")
     if os.path.exists(DETENER_FILE):
@@ -96,6 +96,8 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         cmd.append("--incluir-no-remotas")
     if descripcion_completa:
         cmd.append("--descripcion-completa")
+    if email_a:
+        cmd += ["--email-a", email_a]
 
     # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
     # excepción no manejada, scan_status.json queda con "corriendo": true
@@ -148,6 +150,63 @@ with st.sidebar.expander("País y sitios", expanded=True):
     )
     require_remote = st.checkbox("Solo ofertas remotas", value=scanner.REQUIRE_REMOTE)
 
+with st.sidebar.expander("Aviso por correo"):
+    config_email = scanner.cargar_config_email() or {}
+    email_listo = scanner.config_email_completa(config_email)
+
+    enviar_correo = st.checkbox(
+        "Enviar correo al terminar el scan", value=False, disabled=not email_listo,
+        help=None if email_listo else "Completa y guarda la configuración de abajo primero.",
+    )
+    if email_listo:
+        st.caption(f"Se enviará a {config_email['destinatario']}")
+
+    with st.form("form_email"):
+        email_destino = st.text_input("Correo que recibirá el aviso", value=config_email.get("destinatario", ""))
+        st.caption("Cuenta desde la que se envía (SMTP). Gmail: smtp.gmail.com, puerto 587, y una contraseña de aplicación.")
+        email_host = st.text_input("Servidor SMTP", value=config_email.get("host", "smtp.gmail.com"))
+        email_port = st.number_input("Puerto", value=int(config_email.get("port", 587)), min_value=1, max_value=65535, step=1)
+        email_usuario = st.text_input("Usuario (correo de envío)", value=config_email.get("usuario", ""))
+        email_password = st.text_input(
+            "Contraseña", type="password",
+            placeholder="(guardada — déjala vacía para no cambiarla)" if config_email.get("password") else "",
+        )
+        col_guardar, col_probar = st.columns(2)
+        guardar = col_guardar.form_submit_button("Guardar")
+        probar = col_probar.form_submit_button("Guardar y probar")
+
+    if guardar or probar:
+        nueva_config = {
+            "host": email_host.strip(),
+            "port": int(email_port),
+            "usuario": email_usuario.strip(),
+            "password": email_password or config_email.get("password", ""),
+            "destinatario": email_destino.strip(),
+        }
+        nueva_config["remitente"] = config_email.get("remitente", "")
+        scanner.guardar_config_email(nueva_config)
+        if not scanner.config_email_completa(nueva_config):
+            mensaje = ("warning", "Guardado, pero faltan campos — el aviso no se activa hasta completarlos todos.")
+        elif probar:
+            error = scanner.enviar_correo_fin(
+                nueva_config["destinatario"], "Job Scanner — correo de prueba",
+                "Si lees esto, el aviso por correo del Job Scanner está bien configurado.",
+            )
+            if error:
+                mensaje = ("error", f"Guardado, pero no se pudo enviar el correo de prueba: {error}")
+            else:
+                mensaje = ("success", f"Guardado. Correo de prueba enviado a {nueva_config['destinatario']}")
+        else:
+            mensaje = ("success", "Guardado.")
+        # Rerun para que el checkbox y "Se enviará a..." de arriba lean la
+        # config recién guardada; el mensaje sobrevive vía session_state.
+        st.session_state["email_msg"] = mensaje
+        st.rerun()
+
+    if "email_msg" in st.session_state:
+        tipo, texto = st.session_state.pop("email_msg")
+        getattr(st, tipo)(texto)
+
 with st.sidebar.expander("Keywords", expanded=True):
     keywords_default = "\n".join(scanner.cargar_keywords())
     keywords_text = st.text_area("Una por línea", value=keywords_default, height=180)
@@ -198,15 +257,16 @@ marcado_corriendo = bool(estado_previo and estado_previo.get("corriendo"))
 proceso_muerto = marcado_corriendo and not proceso_sigue_vivo(estado_previo.get("pid", -1))
 scan_corriendo = marcado_corriendo and not proceso_muerto
 
-col_buscar, col_buscar_completa, col_detener = st.columns([1, 1, 1])
-with col_buscar:
-    click_buscar = st.button("🔍 Buscar ofertas", type="primary", disabled=not sitios_elegidos or scan_corriendo)
+col_buscar_completa, col_buscar, col_detener = st.columns([1, 1, 1])
 with col_buscar_completa:
     click_buscar_completa = st.button(
         "📄 Buscar con descripción completa",
+        type="primary",
         disabled=not sitios_elegidos or scan_corriendo,
         help="Para los sitios que lo soportan (todos salvo SENA), visita cada oferta aceptada para sacar su descripción real. Más lento que 'Buscar ofertas'.",
     )
+with col_buscar:
+    click_buscar = st.button("🔍 Buscar ofertas", disabled=not sitios_elegidos or scan_corriendo)
 with col_detener:
     click_detener = st.button("⏹ Detener", disabled=not scan_corriendo)
 
@@ -214,7 +274,10 @@ if click_buscar or click_buscar_completa:
     if not keywords:
         st.error("No hay keywords para buscar.")
     else:
-        lanzar_scan(pais, sitios_elegidos, keywords, require_remote, click_buscar_completa)
+        lanzar_scan(
+            pais, sitios_elegidos, keywords, require_remote, click_buscar_completa,
+            email_a=config_email["destinatario"] if enviar_correo and email_listo else None,
+        )
         # Esperar a que el subproceso escriba su primer status.json (el
         # arranque de Python en Windows puede tardar más que un sleep fijo
         # corto) antes de refrescar la página — si el rerun cae antes de que
@@ -239,7 +302,7 @@ if proceso_muerto:
         f"El scan se cortó de forma inesperada (no fue el botón Detener) — "
         f"se quedó en [{p.get('sitio', '?')}] {p.get('etiqueta', '')} "
         f"({p.get('i', '?')}/{p.get('total', '?')}). "
-        f"Las ofertas que ya había encontrado en esta corrida se guardaron igual."
+        f"Las ofertas que ya había encontrado en este escaneo se guardaron igual."
     )
     if os.path.exists(SCAN_LOG_FILE):
         with open(SCAN_LOG_FILE, encoding="utf-8", errors="replace") as f:
@@ -274,15 +337,18 @@ if scan_corriendo:
     else:
         st.progress(0.0, text="Proceso general — iniciando...")
 
+    if estado_previo.get("inicio_ts"):
+        st.caption(f"⏱ Tiempo transcurrido: {scanner.formatear_duracion(time.time() - estado_previo['inicio_ts'])}")
+
     log = estado_previo.get("log", [])
     with st.expander(f"Ver log (últimas {min(len(log), MAX_LINEAS_LOG_VISIBLES)} de {len(log)} líneas)", expanded=False, key="log_expander"):
         st.code("\n".join(log[-MAX_LINEAS_LOG_VISIBLES:]) or "(sin actividad todavía)", language="text")
 
     if ofertas_en_curso:
-        st.subheader(f"Ofertas encontradas en esta corrida ({len(ofertas_en_curso)})")
+        st.subheader(f"Ofertas encontradas en este escaneo ({len(ofertas_en_curso)})")
         st.dataframe(pd.DataFrame(ofertas_en_curso), width="stretch", height=300)
     else:
-        st.caption("Todavía no encontró ninguna oferta que pase los filtros en esta corrida.")
+        st.caption("Todavía no encontró ninguna oferta que pase los filtros en este escaneo.")
 
     time.sleep(1)
     st.rerun()
@@ -291,7 +357,15 @@ elif estado_previo and estado_previo.get("resultado"):
     if r["detenido"]:
         st.warning(f"Detenido — {r['nuevas']} ofertas nuevas guardadas antes de parar. {r['activas']}/{r['total']} activas y relevantes en total.")
     else:
-        st.success(f"Listo — {r['nuevas']} ofertas nuevas de esta corrida. {r['activas']}/{r['total']} activas y relevantes en total.")
+        st.success(f"Listo — {r['nuevas']} ofertas nuevas de este escaneo. {r['activas']}/{r['total']} activas y relevantes en total.")
+    if r.get("duracion_seg") is not None:
+        st.caption(f"⏱ Duración del último escaneo: {scanner.formatear_duracion(r['duracion_seg'])}")
+    correo = estado_previo.get("correo")
+    if correo:
+        if correo["enviado"]:
+            st.caption("✉ Correo de aviso enviado.")
+        else:
+            st.warning(f"No se pudo enviar el correo de aviso: {correo['error']}")
     errores = estado_previo.get("errores", [])
     if errores:
         with st.expander(f"⚠ Hubo {len(errores)} error(es) durante el scan"):

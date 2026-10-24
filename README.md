@@ -70,6 +70,29 @@ mismas funciones de `scan_getonbrd.py` y `extraer_oferta.py`, así que
 cualquier sitio/país nuevo que se agregue ahí aparece automático en la
 GUI.
 
+### Aviso por correo y duración del scan
+
+Mientras el scan corre, la GUI muestra el tiempo transcurrido; al
+terminar deja "Duración del último escaneo" junto al resultado (también
+queda en `scan_status.json` como `duracion_seg`, y la línea final de la
+consola la imprime).
+
+Para recibir un correo cuando termine (aunque hayas cerrado el
+navegador): en la barra lateral, "Aviso por correo", completa el correo
+que recibirá el aviso y los datos SMTP de la cuenta que envía (servidor,
+puerto, usuario, contraseña) y apreta "Guardar y probar", que manda un
+correo de prueba. Se guarda en `email_config.json` (está en `.gitignore`,
+tiene la contraseña; también se puede crear a mano a partir de
+`email_config.example.json`). En Gmail hay que usar una **contraseña de
+aplicación** (cuenta de Google → Seguridad → verificación en 2 pasos →
+Contraseñas de aplicaciones), no la clave normal. Después marca "Enviar
+correo al terminar el scan". Por consola:
+`python scan_getonbrd.py --email-a tu@correo.com`. El correo trae la
+duración, los totales y la lista de ofertas nuevas; si el scan se detiene
+con el botón, también avisa. Si el envío falla, el scan igual queda
+guardado y la GUI muestra el error. Si el proceso crashea, no se manda
+correo.
+
 ## Uso (línea de comandos)
 
 ```bash
@@ -89,7 +112,7 @@ Genera `ofertas_empleos.csv` con columnas:
 - `motivo`
 - `link`
 - `fecha_creacion` (fecha en que se vio por primera vez esa oferta — se
-  preserva entre corridas, no se pisa con la fecha del último scan)
+  preserva entre escaneos, no se pisa con la fecha del último scan)
 
 Correr sin `--solo` **no borra** resultados de sitios que no corrieron esa
 vez: el script conserva las filas ya guardadas de esos sitios y solo

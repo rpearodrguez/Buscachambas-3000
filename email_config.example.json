@@ -1,0 +1,8 @@
+{
+  "host": "smtp.gmail.com",
+  "port": 587,
+  "usuario": "tu_correo@gmail.com",
+  "password": "contraseña de aplicación (16 letras), no tu clave normal",
+  "remitente": "tu_correo@gmail.com",
+  "destinatario": "donde_quieres_recibir_el_aviso@gmail.com"
+}

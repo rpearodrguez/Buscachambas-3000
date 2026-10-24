@@ -71,8 +71,10 @@ import json
 import re
 import argparse
 import html
+import smtplib
 import unicodedata
 from datetime import datetime
+from email.message import EmailMessage
 from urllib.parse import urljoin, urlparse, quote
 
 import requests
@@ -125,6 +127,93 @@ CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa"
 
 def hoy() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def formatear_duracion(segundos: float) -> str:
+    segundos = int(round(segundos))
+    horas, resto = divmod(segundos, 3600)
+    minutos, segs = divmod(resto, 60)
+    if horas:
+        return f"{horas} h {minutos:02d} min {segs:02d} s"
+    if minutos:
+        return f"{minutos} min {segs:02d} s"
+    return f"{segs} s"
+
+
+# Credenciales SMTP para el aviso por correo al terminar el scan. Vive en un
+# archivo aparte (gitignored) porque tiene la contraseña; ver
+# email_config.example.json para el formato.
+EMAIL_CONFIG_FILE = "email_config.json"
+MAX_OFERTAS_EN_CORREO = 100
+
+
+def cargar_config_email() -> dict | None:
+    if not os.path.exists(EMAIL_CONFIG_FILE):
+        return None
+    try:
+        with open(EMAIL_CONFIG_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def guardar_config_email(config: dict):
+    with open(EMAIL_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def config_email_completa(config: dict | None) -> bool:
+    return bool(config) and all(config.get(k) for k in ("host", "port", "usuario", "password", "destinatario"))
+
+
+def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str) -> str | None:
+    """Manda el aviso de fin de scan. Devuelve None si salió bien, o el
+    mensaje de error — nunca lanza: un correo que falla no debe tumbar un
+    scan que ya terminó y guardó sus resultados."""
+    config = cargar_config_email()
+    if not config:
+        return f"no hay {EMAIL_CONFIG_FILE} (o está mal formado) — copia email_config.example.json y complétalo"
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = asunto
+        msg["From"] = config.get("remitente") or config["usuario"]
+        msg["To"] = destinatario
+        msg.set_content(cuerpo)
+
+        puerto = int(config.get("port", 587))
+        if puerto == 465:
+            servidor = smtplib.SMTP_SSL(config["host"], puerto, timeout=30)
+        else:
+            servidor = smtplib.SMTP(config["host"], puerto, timeout=30)
+        with servidor:
+            if puerto != 465:
+                servidor.starttls()
+            servidor.login(config["usuario"], config["password"])
+            servidor.send_message(msg)
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def armar_correo_fin(pais: str, filas: list[dict], filas_finales: list[dict], duracion: float,
+                     detenido: bool, errores: list[str]) -> tuple[str, str]:
+    activas = len([f for f in filas_finales if f["activa"] == "SI"])
+    estado = "detenido" if detenido else "terminado"
+    asunto = f"Job Scanner {estado}: {len(filas)} ofertas nuevas ({pais})"
+
+    lineas = [
+        f"Scan {estado} en {formatear_duracion(duracion)}.",
+        f"{len(filas)} ofertas nuevas de este escaneo; {activas}/{len(filas_finales)} activas y relevantes en total.",
+    ]
+    if errores:
+        lineas.append(f"{len(errores)} error(es) durante el scan (ver el log en la GUI).")
+    if filas:
+        lineas += ["", "Ofertas nuevas:"]
+        for f in filas[:MAX_OFERTAS_EN_CORREO]:
+            lineas.append(f"- [{f['sitio']}] {f['titulo']} ({f['empresa']})\n  {f['link']}")
+        if len(filas) > MAX_OFERTAS_EN_CORREO:
+            lineas.append(f"... y {len(filas) - MAX_OFERTAS_EN_CORREO} más en {OUTPUT_CSV}.")
+    return asunto, "\n".join(lineas)
 
 
 def _parsear_fecha(fecha_str: str, formato: str) -> str | None:
@@ -1373,9 +1462,11 @@ class EscritorEstado:
     def __init__(self, status_file: str, detener_file: str | None, pais: str, sitios: list[str]):
         self.status_file = status_file
         self.detener_file = detener_file
+        self.inicio = time.time()
         self.estado = {
             "corriendo": True,
             "pid": os.getpid(),
+            "inicio_ts": self.inicio,
             "pais": pais,
             "sitios": sitios,
             "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
@@ -1452,10 +1543,15 @@ class EscritorEstado:
             "total": len(filas_finales),
             "activas": len([f for f in filas_finales if f["activa"] == "SI"]),
             "detenido": self.debe_detener(),
+            "duracion_seg": time.time() - self.inicio,
         }
         self._guardar()
         if self.detener_file and os.path.exists(self.detener_file):
             os.remove(self.detener_file)
+
+    def registrar_correo(self, error: str | None):
+        self.estado["correo"] = {"enviado": error is None, "error": error}
+        self._guardar()
 
 
 def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]:
@@ -1463,9 +1559,9 @@ def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]
     sitios que no están en sitios_habilitados. Devuelve la lista completa
     final (previas + nuevas).
 
-    La fecha_creacion de cada oferta se preserva entre corridas: si un link
-    ya existía (de cualquier corrida anterior, esté o no su sitio en esta
-    corrida), se mantiene su primera fecha vista en vez de pisarla con la
+    La fecha_creacion de cada oferta se preserva entre escaneos: si un link
+    ya existía (de cualquier escaneo anterior, esté o no su sitio en este
+    escaneo), se mantiene su primera fecha vista en vez de pisarla con la
     de hoy — así se puede saber hace cuánto está esa oferta, no solo
     cuándo se vio por última vez."""
     filas_previas = []
@@ -1505,6 +1601,7 @@ def main():
     parser.add_argument("--incluir-no-remotas", action="store_true", help="No filtrar por remoto (por defecto solo trae remotas)")
     parser.add_argument("--descripcion-completa", action="store_true",
                          help="Visita cada oferta aceptada en Computrabajo, ChileTrabajos, LinkedIn y Magneto para sacar la descripción real (más lento). GetOnBrd, Laborum, BNE y ElEmpleo ya la traen sin este flag")
+    parser.add_argument("--email-a", help=f"Si se pasa, manda un correo a esta dirección al terminar (credenciales SMTP en {EMAIL_CONFIG_FILE})")
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
     args = parser.parse_args()
@@ -1529,6 +1626,7 @@ def main():
     keywords = cargar_keywords(args.keywords_file)
     require_remote = not args.incluir_no_remotas
 
+    inicio = time.time()
     print(f"[{datetime.now():%H:%M:%S}] Iniciando escaneo — país: {args.pais}, sitios: {', '.join(ids_sitios)}")
     print(f"Keywords ({len(keywords)}): {', '.join(keywords)}")
 
@@ -1558,9 +1656,22 @@ def main():
     if escritor:
         escritor.finalizar(filas, filas_finales)
 
+    duracion = time.time() - inicio
     activas = [f for f in filas_finales if f["activa"] == "SI"]
-    print(f"\n[{datetime.now():%H:%M:%S}] Listo. {len(activas)}/{len(filas_finales)} ofertas activas y relevantes en total ({len(filas)} nuevas de esta corrida).")
+    print(f"\n[{datetime.now():%H:%M:%S}] Listo en {formatear_duracion(duracion)}. {len(activas)}/{len(filas_finales)} ofertas activas y relevantes en total ({len(filas)} nuevas de este escaneo).")
     print(f"Resultado guardado en: {OUTPUT_CSV}")
+
+    if args.email_a:
+        detenido = escritor.estado["resultado"]["detenido"] if escritor else False
+        errores = escritor.estado["errores"] if escritor else []
+        asunto, cuerpo = armar_correo_fin(args.pais, filas, filas_finales, duracion, detenido, errores)
+        error_correo = enviar_correo_fin(args.email_a, asunto, cuerpo)
+        if error_correo:
+            print(f"⚠ No se pudo enviar el correo a {args.email_a}: {error_correo}", file=sys.stderr)
+        else:
+            print(f"Correo enviado a {args.email_a}")
+        if escritor:
+            escritor.registrar_correo(error_correo)
 
 
 if __name__ == "__main__":
