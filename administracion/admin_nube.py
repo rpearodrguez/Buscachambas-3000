@@ -72,6 +72,19 @@ def guardar_config_local(cfg: dict, ruta: str = CONFIG_LOCAL) -> dict:
     return limpio
 
 
+def credenciales_admin(cfg: dict):
+    """Credenciales de aplicación de tu cuenta de Google (gcloud auth application-default login),
+    con el proyecto de la conexión como proyecto: así no se depende de que gcloud tenga uno configurado."""
+    import google.auth
+
+    credenciales, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    try:
+        credenciales.project_id = cfg["project"]  # lo lee AlmacenGCS
+    except AttributeError:
+        pass  # credenciales de cuenta de servicio: ya traen su propio project_id
+    return credenciales
+
+
 def nombre_job(cfg: dict) -> str:
     return f"projects/{cfg['project']}/locations/{cfg['region']}/jobs/{cfg['job']}"
 

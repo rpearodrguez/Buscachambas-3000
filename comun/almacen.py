@@ -156,7 +156,9 @@ class AlmacenGCS(Almacen):
             if self._cliente is None:
                 from google.cloud import storage
                 if self._credenciales is not None:
-                    self._cliente = storage.Client(credentials=self._credenciales, project=self._credenciales.project_id)
+                    # getattr: no todas las credenciales traen project_id (las de usuario, no)
+                    self._cliente = storage.Client(
+                        credentials=self._credenciales, project=getattr(self._credenciales, "project_id", None))
                 else:
                     self._cliente = storage.Client()
             self._bucket = self._cliente.bucket(self.bucket_nombre)

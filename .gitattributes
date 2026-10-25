@@ -1,0 +1,3 @@
+# Los .bat y .cmd necesitan saltos de linea de Windows (CRLF) para que goto y las etiquetas funcionen.
+*.bat text eol=crlf
+*.cmd text eol=crlf

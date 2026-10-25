@@ -18,6 +18,7 @@ va ahí. El token SMTP se escribe sin mostrarse, va directo a Secret Manager y
 no se puede volver a leer desde aquí.
 """
 
+import json
 import os
 import sys
 
@@ -78,7 +79,7 @@ with tab_conexion:
         if st.button("Probar conexión"):
             try:
                 st.cache_resource.clear()
-                almacenamiento.crear_almacen(admin_nube.destino_admin(cfg))
+                almacenamiento.crear_almacen(admin_nube.destino_admin(cfg), credenciales=admin_nube.credenciales_admin(cfg))
                 st.success("Bucket accesible y privado.")
                 actual_smtp = admin_nube.leer_smtp_del_job(cfg)
                 st.success(f"Job encontrado (servidor SMTP actual: {actual_smtp['host'] or 'sin configurar'}).")
@@ -89,8 +90,10 @@ with tab_conexion:
 
 
 @st.cache_resource
-def _almacen_admin(destino: str):
-    return almacenamiento.crear_almacen(destino)
+def _almacen_admin(destino: str, cfg_json: str):
+    # cfg_json solo entra para que la caché distinga conexiones distintas
+    import json
+    return almacenamiento.crear_almacen(destino, credenciales=admin_nube.credenciales_admin(json.loads(cfg_json)))
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +157,7 @@ SIN_PAIS = "(el primero de la lista)"
 def _pestana_usuarios(cfg):
     st.subheader("Usuarios autorizados")
     try:
-        almacen_admin = _almacen_admin(admin_nube.destino_admin(cfg))
+        almacen_admin = _almacen_admin(admin_nube.destino_admin(cfg), json.dumps(cfg, sort_keys=True))
         datos = usuarios.cargar(almacen_admin)
     except Exception as e:
         _mostrar_error(e, "No se pudo leer la lista de usuarios")

@@ -182,10 +182,23 @@ sin escribir comandos: datos de conexión, correo SMTP y usuarios autorizados.
 Corre con **tus** credenciales de Google, no con las de la GUI pública, que
 no tiene ningún permiso para cambiar esta configuración.
 
+**Lo más simple: doble clic en `administrar.bat`.** Abre un menú que hace todo lo de abajo por ti:
+abrir la herramienta (antes revisa la conexión con Google Cloud), solo revisar la conexión, iniciar
+sesión en Google Cloud, instalar las dependencias, correr las pruebas y ver qué hay en la carpeta.
+No guarda nada sensible: la conexión vive en `admin_local.json` (en `.gitignore`) y el acceso a
+Google en las credenciales de `gcloud`, ambos fuera del repositorio. La herramienta se abre en
+`http://localhost:8510`, aparte de la GUI (8501), para que no se pisen.
+
+Los chequeos previos (`administracion/chequeo_conexion.py`, solo lectura, se puede correr solo)
+revisan: `gcloud` instalado, sesión, credenciales de aplicación, conexión guardada, bucket privado,
+job, secreto del correo y lista de usuarios; y dicen qué hacer si algo falla.
+
+A mano, sin el menú:
+
 ```
-pip install -r requirements-admin.txt
+pip install -r requirements.txt -r requirements-admin.txt
 gcloud auth application-default login      # una vez, con tu cuenta de Google
-streamlit run administracion/admin.py --server.address localhost
+streamlit run administracion/admin.py --server.address localhost --server.port 8510
 ```
 
 - **Conexión:** proyecto, región, job, bucket y nombre del secreto. Se guardan
