@@ -31,6 +31,7 @@ _FORMATO_TABLA_BILLING = re.compile(r"^[A-Za-z0-9-]{4,30}\.[A-Za-z0-9_]{1,1024}\
 ENV_HOST = "BUSCACHAMBAS_SMTP_HOST"
 ENV_PORT = "BUSCACHAMBAS_SMTP_PORT"
 ENV_USER = "BUSCACHAMBAS_SMTP_USER"
+ENV_ADMIN = "BUSCACHAMBAS_ADMIN_EMAIL"  # a quién llega el aviso cuando un escaneo falla
 VERSIONES_A_CONSERVAR = 2  # del secreto: la nueva y la anterior (por si el token nuevo falla)
 
 
@@ -114,33 +115,46 @@ def validar_smtp(host: str, puerto, usuario: str) -> tuple[str, int, str]:
 
 # --- operaciones en la nube --------------------------------------------------
 
-def leer_smtp_del_job(cfg: dict, credenciales=None) -> dict:
-    """host/puerto/usuario actuales (variables de entorno del job). La
+def _cliente_jobs(credenciales=None, cliente=None):
+    if cliente is not None:
+        return cliente
+    from google.cloud import run_v2
+
+    return run_v2.JobsClient(credentials=credenciales) if credenciales is not None else run_v2.JobsClient()
+
+
+def leer_smtp_del_job(cfg: dict, credenciales=None, cliente=None) -> dict:
+    """host/puerto/usuario del correo y correo del administrador (variables de entorno del job). La
     contraseña nunca se lee: vive en Secret Manager y solo se puede reemplazar."""
-    from google.cloud import run_v2
-
-    cliente = run_v2.JobsClient(credentials=credenciales) if credenciales is not None else run_v2.JobsClient()
-    job = cliente.get_job(name=nombre_job(cfg))
+    job = _cliente_jobs(credenciales, cliente).get_job(name=nombre_job(cfg))
     env = {e.name: e.value for e in job.template.template.containers[0].env}
-    return {"host": env.get(ENV_HOST, ""), "port": env.get(ENV_PORT, "587"), "usuario": env.get(ENV_USER, "")}
+    return {"host": env.get(ENV_HOST, ""), "port": env.get(ENV_PORT, "587"), "usuario": env.get(ENV_USER, ""),
+            "admin_email": env.get(ENV_ADMIN, "")}
 
 
-def actualizar_smtp_job(cfg: dict, host: str, puerto: int, usuario: str, credenciales=None) -> None:
-    """Escribe host/puerto/usuario en las variables de entorno del job
-    (crea una revisión nueva; las demás variables y secretos no se tocan)."""
-    from google.cloud import run_v2
-
-    cliente = run_v2.JobsClient(credentials=credenciales) if credenciales is not None else run_v2.JobsClient()
-    job = cliente.get_job(name=nombre_job(cfg))
+def actualizar_smtp_job(cfg: dict, host: str, puerto: int, usuario: str, credenciales=None,
+                        admin_email: str | None = None, cliente=None) -> None:
+    """Escribe host/puerto/usuario (y el correo del administrador) en las variables de entorno del job (crea una
+    revisión nueva; las demás variables y secretos no se tocan). admin_email: None = no tocarlo, "" = quitarlo."""
+    clientejobs = _cliente_jobs(credenciales, cliente)
+    job = clientejobs.get_job(name=nombre_job(cfg))
     contenedor = job.template.template.containers[0]
-    for nombre, valor in ((ENV_HOST, host), (ENV_PORT, str(puerto)), (ENV_USER, usuario)):
-        for e in contenedor.env:
-            if e.name == nombre:
-                e.value = valor
-                break
+    cambios = {ENV_HOST: host, ENV_PORT: str(puerto), ENV_USER: usuario}
+    if admin_email is not None:
+        cambios[ENV_ADMIN] = admin_email.strip()
+    for nombre, valor in cambios.items():
+        indice = next((i for i, e in enumerate(contenedor.env) if e.name == nombre), None)
+        if nombre == ENV_ADMIN and not valor:
+            if indice is not None:
+                del contenedor.env[indice]
+            continue
+        if indice is not None:
+            contenedor.env[indice].value = valor
         else:
+            from google.cloud import run_v2
+
             contenedor.env.append(run_v2.EnvVar(name=nombre, value=valor))
-    cliente.update_job(job=job).result(timeout=300)
+    clientejobs.update_job(job=job).result(timeout=300)
 
 
 def reemplazar_token(cfg: dict, token: str, credenciales=None) -> int:
@@ -164,6 +178,21 @@ def reemplazar_token(cfg: dict, token: str, credenciales=None) -> int:
         cliente.destroy_secret_version(request={"name": v.name})
         destruidas += 1
     return destruidas
+
+
+def probar_alerta(cfg: dict, credenciales=None, cliente=None) -> tuple[bool, str]:
+    """Ejecuta el job con --probar-alerta: manda al administrador una alerta de EJEMPLO con un log adjunto, por el
+    mismo camino que una alerta real de fallo. Falla (con aviso) si el job no tiene correo de administrador."""
+    from google.cloud import run_v2
+
+    overrides = run_v2.RunJobRequest.Overrides(
+        container_overrides=[run_v2.RunJobRequest.Overrides.ContainerOverride(args=["--probar-alerta"])]
+    )
+    ejecucion = _cliente_jobs(credenciales, cliente).run_job(
+        request=run_v2.RunJobRequest(name=nombre_job(cfg), overrides=overrides)).result(timeout=180)
+    if ejecucion.succeeded_count >= 1:
+        return True, "Alerta de ejemplo enviada al correo del administrador."
+    return False, "El job terminó con error: ¿está configurado el correo del administrador? (Revisa también los logs del job.)"
 
 
 def probar_correo(cfg: dict, destinatario: str, credenciales=None) -> tuple[bool, str]:

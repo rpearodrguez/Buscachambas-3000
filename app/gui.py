@@ -234,6 +234,8 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         argumentos.append("--descripcion-completa")
     if email_a:
         argumentos += ["--email-a", email_a]
+    if JOB_NAME and usuario_email:
+        argumentos += ["--usuario", usuario_email]  # solo para que el aviso de fallo al administrador diga de quién fue
     if STORAGE_DESTINO:
         argumentos += ["--storage", STORAGE_DESTINO]
 
@@ -663,6 +665,13 @@ if scan_corriendo:
 
     time.sleep(1)
     st.rerun()
+elif estado_previo and estado_previo.get("fallo"):
+    # El escaneo se cayó. Mensaje genérico a propósito: la traza y el log van solo al correo del administrador.
+    aviso = estado_previo["fallo"]
+    st.error(aviso["mensaje"] + (" El administrador fue avisado por correo." if aviso.get("alertado") else ""))
+    if estado_previo.get("errores"):
+        with st.expander(f"⚠ Hubo {len(estado_previo['errores'])} error(es) antes de que fallara"):
+            st.code("\n".join(estado_previo["errores"]), language="text")
 elif estado_previo and estado_previo.get("resultado"):
     r = estado_previo["resultado"]
     if r["detenido"]:

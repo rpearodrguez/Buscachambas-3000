@@ -117,7 +117,7 @@ with tab_correo:
                 st.session_state["smtp_actual"] = admin_nube.leer_smtp_del_job(cfg)
         except Exception as e:
             _mostrar_error(e, "No se pudo leer la configuración del job")
-            st.session_state["smtp_actual"] = {"host": "", "port": "587", "usuario": ""}
+            st.session_state["smtp_actual"] = {"host": "", "port": "587", "usuario": "", "admin_email": ""}
         smtp = st.session_state["smtp_actual"]
 
         with st.form("form_smtp"):
@@ -126,22 +126,35 @@ with tab_correo:
             usuario = st.text_input("Usuario (dirección que envía)", value=smtp["usuario"])
             token = st.text_input("Token / contraseña SMTP", type="password", placeholder="vacío = no cambiarlo")
             destino_prueba = st.text_input("Correo de prueba (a dónde mandar la prueba)")
-            col_g, col_p = st.columns(2)
+            admin_email = st.text_input(
+                "Correo del administrador (avisos cuando un escaneo falla)", value=smtp.get("admin_email", ""),
+                placeholder="vacío = nadie recibe avisos de fallos",
+                help="Si un escaneo se cae, el job te manda un correo con el error y el log completo adjunto.",
+            )
+            col_g, col_p, col_a = st.columns(3)
             guardar = col_g.form_submit_button("Guardar")
-            probar = col_p.form_submit_button("Guardar y probar")
+            probar = col_p.form_submit_button("Guardar y probar correo")
+            probar_la_alerta = col_a.form_submit_button("Guardar y probar alerta")
 
-        if guardar or probar:
+        if guardar or probar or probar_la_alerta:
             try:
                 h, p, u = admin_nube.validar_smtp(host, puerto, usuario)
                 destino = usuarios.validar_correo(destino_prueba) if probar else None
+                correo_admin = usuarios.validar_correo(admin_email) if admin_email.strip() else ""
+                if probar_la_alerta and not correo_admin:
+                    raise admin_nube.ErrorAdmin("Para probar la alerta, escribe primero el correo del administrador.")
                 with st.spinner("Guardando en el job..."):
-                    admin_nube.actualizar_smtp_job(cfg, h, p, u)
+                    admin_nube.actualizar_smtp_job(cfg, h, p, u, admin_email=correo_admin)
                 if token.strip():
                     with st.spinner("Guardando el token en Secret Manager..."):
                         destruidas = admin_nube.reemplazar_token(cfg, token)
                     st.success(f"Token actualizado ({destruidas} versión(es) vieja(s) eliminada(s)).")
-                st.session_state["smtp_actual"] = {"host": h, "port": str(p), "usuario": u}
-                st.success("Servidor, puerto y usuario guardados en el job.")
+                st.session_state["smtp_actual"] = {"host": h, "port": str(p), "usuario": u, "admin_email": correo_admin}
+                st.success("Servidor, puerto, usuario y correo del administrador guardados en el job.")
+                if probar_la_alerta:
+                    with st.spinner("Ejecutando el job para mandar la alerta de ejemplo (puede tardar un poco)..."):
+                        ok, mensaje = admin_nube.probar_alerta(cfg)
+                    (st.success if ok else st.error)(mensaje)
                 if probar:
                     with st.spinner("Ejecutando el job para mandar el correo de prueba (puede tardar un poco)..."):
                         ok, mensaje = admin_nube.probar_correo(cfg, destino)

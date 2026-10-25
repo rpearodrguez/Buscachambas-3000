@@ -73,8 +73,10 @@ import argparse
 import html
 import io
 import smtplib
+import traceback
 import unicodedata
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from urllib.parse import urljoin, urlparse, quote
 
@@ -1626,6 +1628,127 @@ class EscritorEstado:
         self.estado["correo"] = {"enviado": error is None, "error": error}
         self._guardar(forzar=True)
 
+    def fallar(self, mensaje: str):
+        """El escaneo se cayó: se cierra el estado como fallido para que la GUI lo muestre de inmediato, en lugar
+        de esperar a que pase el tiempo sin señales. El mensaje es genérico: llega a la pantalla del usuario."""
+        self.estado["corriendo"] = False
+        self.estado["fallo"] = {"mensaje": mensaje, "alertado": None}
+        self._guardar(forzar=True)
+
+    def registrar_alerta(self, error: str | None):
+        if "fallo" in self.estado:
+            self.estado["fallo"]["alertado"] = error is None
+            self._guardar(forzar=True)
+
+
+class RegistroDeEjecucion:
+    """Copia lo que el escaneo imprime (stdout y stderr, en orden) a un búfer con tope, para adjuntarlo como
+    archivo de log en el aviso al administrador si algo falla. Conserva el final, que es donde está el error."""
+
+    TOPE = 300_000  # caracteres
+
+    def __init__(self):
+        self._partes = deque()
+        self._tamano = 0
+        self._recortado = False
+        self._originales = None
+
+    def escribir(self, texto: str) -> None:
+        self._partes.append(texto)
+        self._tamano += len(texto)
+        while self._tamano > self.TOPE and len(self._partes) > 1:
+            self._tamano -= len(self._partes.popleft())
+            self._recortado = True
+
+    def contenido(self) -> str:
+        texto = "".join(self._partes)
+        return ("[... el inicio del log se recortó por tamaño ...]\n" + texto) if self._recortado else texto
+
+    def instalar(self) -> "RegistroDeEjecucion":
+        self._originales = (sys.stdout, sys.stderr)
+        sys.stdout = _Espejo(sys.stdout, self)
+        sys.stderr = _Espejo(sys.stderr, self)
+        return self
+
+    def restaurar(self) -> None:
+        if self._originales:
+            sys.stdout, sys.stderr = self._originales
+            self._originales = None
+
+
+class _Espejo:
+    """Un stream que escribe al original y además al registro."""
+
+    def __init__(self, destino, registro: RegistroDeEjecucion):
+        self._destino = destino
+        self._registro = registro
+
+    def write(self, texto):
+        self._registro.escribir(texto)
+        return self._destino.write(texto)
+
+    def flush(self):
+        self._destino.flush()
+
+    def __getattr__(self, nombre):  # encoding, isatty, etc.
+        return getattr(self._destino, nombre)
+
+
+_CONTEXTO: dict = {}  # datos del escaneo en curso (quién, qué país...) para el aviso de fallo
+
+
+def armar_alerta(contexto: dict, motivo: str, traza: str | None) -> tuple[str, str]:
+    usuario = contexto.get("usuario") or "(sin usuario: ejecución manual)"
+    lineas = [
+        "Un escaneo terminó con error.",
+        "",
+        f"Cuándo: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC",
+        f"Usuario: {usuario}",
+        f"País: {contexto.get('pais') or '?'}",
+        f"Sitios: {contexto.get('sitios') or 'todos los del país'}",
+        f"Keywords: {contexto.get('n_keywords', '?')}",
+        f"Motivo: {motivo}",
+    ]
+    if traza:
+        lineas += ["", "Traza del error:", traza.rstrip()]
+    lineas += ["", "El log completo de la ejecución va adjunto (log_escaneo.txt)."]
+    return f"[Job Scanner] Falló un escaneo — {usuario}", "\n".join(lineas)
+
+
+def alertar_al_administrador(contexto: dict, motivo: str, traza: str | None, registro: "RegistroDeEjecucion | None") -> str | None:
+    """Manda el aviso de fallo, con el log adjunto, al correo del administrador (variable de entorno del job,
+    que se cambia desde la herramienta de administración). Devuelve None si salió bien o el motivo del fallo."""
+    admin = os.environ.get("BUSCACHAMBAS_ADMIN_EMAIL", "").strip()
+    if not admin:
+        return "no hay correo de administrador configurado (BUSCACHAMBAS_ADMIN_EMAIL)"
+    asunto, cuerpo = armar_alerta(contexto, motivo, traza)
+    log = (registro.contenido() if registro else "(sin registro)").encode("utf-8", errors="replace")
+    return enviar_correo_fin(admin, asunto, cuerpo, adjuntos=[("log_escaneo.txt", log)])
+
+
+def _avisar_fallo(motivo: str, traza: str | None, registro: RegistroDeEjecucion, marcar_estado: bool = False) -> None:
+    """Cierra el estado como fallido (si lo hay) y avisa al administrador. Nunca lanza: lo que ya falló debe
+    seguir el camino original (traza en el log y código de salida distinto de cero)."""
+    escritor = _CONTEXTO.get("escritor")
+    if marcar_estado and escritor:
+        try:
+            escritor.fallar("El escaneo terminó con un error inesperado.")
+        except Exception:
+            pass
+    try:
+        error = alertar_al_administrador(_CONTEXTO, motivo, traza, registro)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    if error:
+        print(f"⚠ No se pudo avisar al administrador: {error}", file=sys.stderr)
+    else:
+        print("Se avisó al administrador por correo.")
+    if marcar_estado and escritor:
+        try:
+            escritor.registrar_alerta(error)
+        except Exception:
+            pass
+
 
 def nombre_marca_correo(inicio_ts: float) -> str:
     """Archivo-marca de "ya se pidió enviar por correo el resultado de este escaneo". El escaneo se identifica
@@ -1717,7 +1840,7 @@ def guardar_resultados(filas: list[dict], sitios_habilitados: set, almacen: Alma
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def _main_interno():
     parser = argparse.ArgumentParser(description="Scanner de ofertas de empleo multi-sitio/país")
     parser.add_argument("--pais", default="Chile", help=f"País a escanear. Disponibles: {', '.join(PAISES)}")
     parser.add_argument("--solo", help="Ids de sitio separados por coma para correr solo esos (ej: laborum_cl)")
@@ -1733,6 +1856,8 @@ def main():
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
     parser.add_argument("--probar-correo", metavar="DESTINATARIO", help="Manda un correo de prueba con el SMTP configurado y termina, sin escanear nada (lo usa la herramienta de administración)")
     parser.add_argument("--enviar-resultado", metavar="DESTINATARIO", help="Manda por correo el resultado del último escaneo terminado y termina, sin escanear nada (lo pide la GUI; con --inicio-ts se asegura de que sea el escaneo que se vio en pantalla)")
+    parser.add_argument("--usuario", help="Correo de quien lanzó el escaneo (lo pone la GUI); solo aparece en el aviso al administrador si el escaneo falla")
+    parser.add_argument("--probar-alerta", action="store_true", help="Manda al administrador una alerta de EJEMPLO con un log adjunto y termina, sin escanear nada (lo usa la herramienta de administración)")
     parser.add_argument("--inicio-ts", type=float, help="Hora (epoch) en que la GUI lanzó este scan; el contador de tiempo parte de ahí y no del arranque del contenedor")
     parser.add_argument("--storage", help="Dónde viven keywords, estado, flag de detener y CSV de resultados: gs://bucket/prefijo para Cloud Storage. Si no se pasa, archivos en disco como siempre")
     args = parser.parse_args()
@@ -1747,10 +1872,23 @@ def main():
         print("Correo de prueba enviado.")
         return
 
+    if args.probar_alerta:
+        contexto = {"usuario": "(alerta de ejemplo)", "pais": "Chile", "sitios": "ejemplo", "n_keywords": 0}
+        registro = RegistroDeEjecucion()
+        registro.escribir("[ejemplo] Esto es un log de ejemplo: así llegará el log real de un escaneo que falle.\n")
+        error = alertar_al_administrador(contexto, "alerta de ejemplo (no es un fallo real)", None, registro)
+        if error:
+            print(f"⚠ No se pudo mandar la alerta de ejemplo: {error}", file=sys.stderr)
+            sys.exit(1)
+        print("Alerta de ejemplo enviada al administrador.")
+        return
+
+    _CONTEXTO.update(usuario=args.usuario, pais=args.pais, sitios=args.solo)
     try:
         almacen = crear_almacen(args.storage)
     except ErrorAlmacen as e:
         print(f"Error: {e}", file=sys.stderr)
+        _CONTEXTO.update(alertar_salida=True, motivo="no se pudo usar el almacenamiento del escaneo")
         sys.exit(1)
     en_la_nube = bool(args.storage)
 
@@ -1782,6 +1920,7 @@ def main():
         ids_sitios = [i for i in ids_sitios if i in pedidos]
 
     keywords = cargar_keywords(args.keywords_file, almacen)
+    _CONTEXTO["n_keywords"] = len(keywords)
     require_remote = not args.incluir_no_remotas
 
     inicio = inicio_valido(args.inicio_ts)
@@ -1797,6 +1936,7 @@ def main():
             intervalo_detener=INTERVALO_DETENER_NUBE if en_la_nube else 0,
             inicio=inicio,
         )
+        _CONTEXTO["escritor"] = escritor
 
     def _log_progreso(nombre_sitio):
         print(f"[{datetime.now():%H:%M:%S}] {nombre_sitio}...")
@@ -1838,6 +1978,24 @@ def main():
             print(f"Correo enviado a {args.email_a}")
         if escritor:
             escritor.registrar_correo(error_correo)
+
+
+def main():
+    """Punto de entrada. Envuelve al escaneo para que, si se cae, el administrador reciba un correo con el error y
+    el log completo, y el estado quede cerrado como fallido. Si no falla, es transparente."""
+    _CONTEXTO.clear()
+    registro = RegistroDeEjecucion().instalar()
+    try:
+        _main_interno()
+    except SystemExit as e:
+        if e.code not in (0, None) and _CONTEXTO.get("alertar_salida"):
+            _avisar_fallo(_CONTEXTO.get("motivo", f"el proceso terminó con código {e.code}"), None, registro)
+        raise
+    except Exception as e:
+        _avisar_fallo(f"{type(e).__name__}: {e}", traceback.format_exc(), registro, marcar_estado=True)
+        raise
+    finally:
+        registro.restaurar()
 
 
 if __name__ == "__main__":

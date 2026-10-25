@@ -14,7 +14,7 @@ from comun import lanzador, usuarios
 
 VENTANA_SEMANA = 7 * 24 * 3600
 USO_ARCHIVO = "uso.json"
-MAX_USOS_GUARDADOS = 200
+MAX_USOS_GUARDADOS = 5000  # suficiente para años de historial (el panel de actividad cuenta de aquí)
 
 LOCK_ARCHIVO = "lanzando.lock"
 LOCK_TTL = 60  # segundos: el candado solo cubre la ventana entre el clic y el estado "corriendo"

@@ -125,6 +125,10 @@ def chequear() -> int:
             linea(OK, "job encontrado", f"correo: {smtp['host'] or 'SMTP sin configurar'}")
             if not smtp["host"]:
                 linea(AVISO, "el job no tiene servidor SMTP", "configuralo en la pestana Correo")
+            if smtp.get("admin_email"):
+                linea(OK, "alertas de fallos configuradas", "si un escaneo se cae, llega un correo con el log")
+            else:
+                linea(AVISO, "sin correo de administrador", "si un escaneo se cae, nadie se entera; configuralo en la pestana Correo")
         except Exception as e:
             linea(FALLA, "no se pudo leer el job", type(e).__name__)
             fallas += 1
