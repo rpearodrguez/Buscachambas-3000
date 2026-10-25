@@ -1479,6 +1479,16 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
     return filas, sitios_habilitados
 
 
+def inicio_valido(inicio_ts: float | None, ahora: float | None = None, tolerancia: float = 3600) -> float:
+    """Hora de inicio que pasa la GUI con --inicio-ts (cuando lanzó el job,
+    antes de que el contenedor arrancara). Si falta o es absurda (en el
+    futuro, o de hace más de `tolerancia` segundos), se usa la hora actual."""
+    ahora = time.time() if ahora is None else ahora
+    if inicio_ts is None or inicio_ts > ahora or ahora - inicio_ts > tolerancia:
+        return ahora
+    return inicio_ts
+
+
 def estado_inicial(pais: str, sitios: list[str], ahora: float | None = None, pid: int | None = None) -> dict:
     """Estado de un scan recién lanzado. Lo usa EscritorEstado al arrancar y
     la GUI cuando lanza el scan en la nube: el job tarda en arrancar, y
@@ -1516,7 +1526,7 @@ class EscritorEstado:
     # de GetOnBrd por ejemplo) y cada escritura reescribe el archivo entero.
 
     def __init__(self, almacen: Almacen, status_file: str, detener_file: str | None, pais: str, sitios: list[str],
-                 min_intervalo_guardado: float = 0, intervalo_detener: float = 0):
+                 min_intervalo_guardado: float = 0, intervalo_detener: float = 0, inicio: float | None = None):
         """min_intervalo_guardado: segundos mínimos entre subidas del
         estado (0 = en cada paso, como en disco local). En un bucket cada
         subida es una operación de escritura con cuota gratis limitada, así
@@ -1530,7 +1540,7 @@ class EscritorEstado:
         self.intervalo_detener = intervalo_detener
         self._ultimo_guardado = 0.0
         self._ultimo_chequeo_detener = (0.0, False)
-        self.inicio = time.time()
+        self.inicio = time.time() if inicio is None else inicio
         self.estado = estado_inicial(pais, sitios, self.inicio)
         self._guardar(forzar=True)
 
@@ -1665,6 +1675,7 @@ def main():
     parser.add_argument("--email-a", help=f"Si se pasa, manda un correo a esta dirección al terminar (credenciales SMTP en {EMAIL_CONFIG_FILE})")
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
+    parser.add_argument("--inicio-ts", type=float, help="Hora (epoch) en que la GUI lanzó este scan; el contador de tiempo parte de ahí y no del arranque del contenedor")
     parser.add_argument("--storage", help="Dónde viven keywords, estado, flag de detener y CSV de resultados: gs://bucket/prefijo para Cloud Storage. Si no se pasa, archivos en disco como siempre")
     args = parser.parse_args()
     try:
@@ -1694,7 +1705,7 @@ def main():
     keywords = cargar_keywords(args.keywords_file, almacen)
     require_remote = not args.incluir_no_remotas
 
-    inicio = time.time()
+    inicio = inicio_valido(args.inicio_ts)
     print(f"[{datetime.now():%H:%M:%S}] Iniciando escaneo — país: {args.pais}, sitios: {', '.join(ids_sitios)}")
     print(f"Keywords ({len(keywords)}): {', '.join(keywords)}")
 
@@ -1705,6 +1716,7 @@ def main():
             almacen, args.status_file, args.detener_file, args.pais, nombres_sitios,
             min_intervalo_guardado=INTERVALO_GUARDADO_NUBE if en_la_nube else 0,
             intervalo_detener=INTERVALO_DETENER_NUBE if en_la_nube else 0,
+            inicio=inicio,
         )
 
     def _log_progreso(nombre_sitio):

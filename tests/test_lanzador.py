@@ -111,5 +111,21 @@ class DetenerConservaLoEncontradoTests(unittest.TestCase):
         self.assertEqual(len(filas), 3)
 
 
+class InicioTests(unittest.TestCase):
+    def test_inicio_valido(self):
+        self.assertEqual(scanner.inicio_valido(995.0, ahora=1000.0), 995.0)
+        self.assertEqual(scanner.inicio_valido(None, ahora=1000.0), 1000.0)
+        self.assertEqual(scanner.inicio_valido(1005.0, ahora=1000.0), 1000.0)  # en el futuro: se ignora
+        self.assertEqual(scanner.inicio_valido(1.0, ahora=10_000.0), 10_000.0)  # de hace más de una hora: se ignora
+
+    def test_el_escritor_parte_del_inicio_que_le_pasan(self):
+        import tempfile
+        import almacen as alm
+        with tempfile.TemporaryDirectory() as d:
+            e = scanner.EscritorEstado(alm.AlmacenLocal(d), "s.json", None, "Chile", ["X"], inicio=12345.0)
+            self.assertEqual(e.estado["inicio_ts"], 12345.0)
+            self.assertEqual(e.inicio, 12345.0)
+
+
 if __name__ == "__main__":
     unittest.main()

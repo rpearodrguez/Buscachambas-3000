@@ -159,8 +159,12 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         # para que la página lo muestre de inmediato (el scan lo pisa al
         # arrancar). Si el job no llega a arrancar, queda sin latido y la
         # GUI lo marca como cortado (ver lanzador.scan_sin_latido).
+        # La hora de inicio también viaja al job (--inicio-ts), así el
+        # contador de tiempo no se reinicia cuando el job toma el relevo.
+        inicio = time.time()
+        argumentos += ["--inicio-ts", repr(inicio)]
         nombres = [scanner.SITIOS_POR_ID[i]["nombre"] for i in ids_sitios]
-        almacen.escribir_texto(STATUS_FILE, json.dumps(scanner.estado_inicial(pais, nombres, pid=0), ensure_ascii=False))
+        almacen.escribir_texto(STATUS_FILE, json.dumps(scanner.estado_inicial(pais, nombres, ahora=inicio, pid=0), ensure_ascii=False))
         lanzador.lanzar_job(JOB_NAME, argumentos, credenciales=_credenciales_gcp())
         return
 
