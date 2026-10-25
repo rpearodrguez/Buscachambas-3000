@@ -1475,6 +1475,29 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
     return filas, sitios_habilitados
 
 
+def estado_inicial(pais: str, sitios: list[str], ahora: float | None = None, pid: int | None = None) -> dict:
+    """Estado de un scan recién lanzado. Lo usa EscritorEstado al arrancar y
+    la GUI cuando lanza el scan en la nube: el job tarda en arrancar, y
+    escribiendo esto antes la GUI muestra "corriendo" de inmediato en vez de
+    seguir mostrando los resultados del scan anterior."""
+    ahora = time.time() if ahora is None else ahora
+    return {
+        "corriendo": True,
+        "pid": os.getpid() if pid is None else pid,
+        "inicio_ts": ahora,
+        "actualizado_ts": ahora,
+        "pais": pais,
+        "sitios": sitios,
+        "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
+        "pasos_completados": 0,
+        "pasos_totales_por_sitio": {},
+        "log": [],
+        "errores": [],
+        "ofertas_encontradas": [],
+        "resultado": None,
+    }
+
+
 class EscritorEstado:
     """Escribe el progreso del scan a un archivo JSON en disco (atómico vía
     escribir-y-renombrar), y ofrece un chequeo de "detener" basado en la
@@ -1504,21 +1527,7 @@ class EscritorEstado:
         self._ultimo_guardado = 0.0
         self._ultimo_chequeo_detener = (0.0, False)
         self.inicio = time.time()
-        self.estado = {
-            "corriendo": True,
-            "pid": os.getpid(),
-            "inicio_ts": self.inicio,
-            "actualizado_ts": self.inicio,
-            "pais": pais,
-            "sitios": sitios,
-            "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
-            "pasos_completados": 0,
-            "pasos_totales_por_sitio": {},
-            "log": [],
-            "errores": [],
-            "ofertas_encontradas": [],
-            "resultado": None,
-        }
+        self.estado = estado_inicial(pais, sitios, self.inicio)
         self._guardar(forzar=True)
 
     def _guardar(self, forzar: bool = False):

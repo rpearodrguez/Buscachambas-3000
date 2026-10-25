@@ -116,17 +116,21 @@ class AlmacenGCS(Almacen):
 
     INTENTOS = 3
 
-    def __init__(self, bucket: str, prefijo: str = "", cliente=None):
+    def __init__(self, bucket: str, prefijo: str = "", cliente=None, credenciales=None):
         self.bucket_nombre = bucket
         self.prefijo = prefijo.strip("/")
         self._cliente = cliente
+        self._credenciales = credenciales
         self._bucket = None
 
     def _obtener_bucket(self):
         if self._bucket is None:
             if self._cliente is None:
                 from google.cloud import storage
-                self._cliente = storage.Client()
+                if self._credenciales is not None:
+                    self._cliente = storage.Client(credentials=self._credenciales, project=self._credenciales.project_id)
+                else:
+                    self._cliente = storage.Client()
             self._bucket = self._cliente.bucket(self.bucket_nombre)
         return self._bucket
 
@@ -204,17 +208,19 @@ class AlmacenGCS(Almacen):
         return f"almacenamiento privado ({nombre})"
 
 
-def crear_almacen(destino: str | None, verificar_privado: bool = True) -> Almacen:
+def crear_almacen(destino: str | None, verificar_privado: bool = True, credenciales=None) -> Almacen:
     """None o "" -> disco local. "gs://bucket[/prefijo]" -> Cloud Storage,
-    verificando (una vez) que el bucket sea privado. verificar_privado=False
-    existe solo para los tests con un cliente falso."""
+    verificando (una vez) que el bucket sea privado. `credenciales`: de una
+    cuenta de servicio (la GUI en Streamlit Cloud las trae de sus secrets);
+    sin ellas se usan las del entorno (el Cloud Run Job).
+    verificar_privado=False existe solo para los tests con un cliente falso."""
     if not destino:
         return AlmacenLocal()
     if destino.startswith("gs://"):
         bucket, _, prefijo = destino[len("gs://"):].partition("/")
         if not bucket:
             raise ValueError("Destino de almacenamiento inválido (se esperaba gs://bucket/prefijo)")
-        almacen = AlmacenGCS(bucket, prefijo)
+        almacen = AlmacenGCS(bucket, prefijo, credenciales=credenciales)
         if verificar_privado:
             almacen.verificar_privado()
         return almacen

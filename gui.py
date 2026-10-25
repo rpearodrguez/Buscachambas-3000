@@ -33,6 +33,7 @@ import streamlit as st
 from bs4 import BeautifulSoup
 
 import almacen as almacenamiento
+import lanzador
 import scan_getonbrd as scanner
 import extraer_oferta as extractor
 
@@ -46,8 +47,37 @@ SCAN_LOG_FILE = "scan_stdout.log"
 # con BUSCACHAMBAS_STORAGE=gs://bucket, en la carpeta de este usuario del
 # bucket. USUARIO_LOCAL es un reemplazo hasta que haya login por usuario.
 USUARIO_LOCAL = "local"
-STORAGE_BASE = os.environ.get("BUSCACHAMBAS_STORAGE")
+
+
+def _config(nombre: str) -> str | None:
+    """Variable de entorno o, si no está, secret de Streamlit. Nada de esto
+    va al repo (es público): ni el bucket, ni el job, ni las credenciales."""
+    valor = os.environ.get(nombre)
+    if valor:
+        return valor
+    try:
+        return st.secrets.get(nombre)
+    except Exception:  # sin archivo de secrets (uso local)
+        return None
+
+
+def _credenciales_gcp():
+    """Credenciales de la cuenta de servicio de la GUI (secret
+    "gcp_service_account" en Streamlit Cloud). Sin él, se usan las del
+    entorno (gcloud / ADC), útil para probar desde tu PC."""
+    try:
+        info = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        return None
+    from google.oauth2 import service_account
+    return service_account.Credentials.from_service_account_info(info)
+
+
+STORAGE_BASE = _config("BUSCACHAMBAS_STORAGE")
 STORAGE_DESTINO = almacenamiento.destino_de_usuario(STORAGE_BASE, USUARIO_LOCAL)
+# Si está definido, el scan corre como Cloud Run Job (projects/../jobs/..) en
+# vez de un subproceso local; requiere STORAGE_BASE para compartir el estado.
+JOB_NAME = _config("BUSCACHAMBAS_JOB")
 
 st.set_page_config(page_title="Job Scanner", layout="wide")
 st.title("Job Scanner")
@@ -58,8 +88,12 @@ st.title("Job Scanner")
 # mientras corre un scan.
 @st.cache_resource
 def _crear_almacen(destino):
-    return almacenamiento.crear_almacen(destino)
+    return almacenamiento.crear_almacen(destino, credenciales=_credenciales_gcp())
 
+
+if JOB_NAME and not STORAGE_DESTINO:
+    st.error("Configuración incompleta: el escaneo en la nube necesita almacenamiento compartido.")
+    st.stop()
 
 try:
     almacen = _crear_almacen(STORAGE_DESTINO)
@@ -104,8 +138,7 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
     almacen.escribir_texto(KEYWORDS_GUI_FILE, "\n".join(keywords) + "\n")
     almacen.borrar(DETENER_FILE)
 
-    cmd = [
-        sys.executable, "scan_getonbrd.py",
+    argumentos = [
         "--pais", pais,
         "--solo", ",".join(ids_sitios),
         "--keywords-file", KEYWORDS_GUI_FILE,
@@ -113,13 +146,25 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         "--detener-file", DETENER_FILE,
     ]
     if not require_remote:
-        cmd.append("--incluir-no-remotas")
+        argumentos.append("--incluir-no-remotas")
     if descripcion_completa:
-        cmd.append("--descripcion-completa")
+        argumentos.append("--descripcion-completa")
     if email_a:
-        cmd += ["--email-a", email_a]
+        argumentos += ["--email-a", email_a]
     if STORAGE_DESTINO:
-        cmd += ["--storage", STORAGE_DESTINO]
+        argumentos += ["--storage", STORAGE_DESTINO]
+
+    if JOB_NAME:
+        # El job tarda en arrancar: dejar ya escrito un estado "corriendo"
+        # para que la página lo muestre de inmediato (el scan lo pisa al
+        # arrancar). Si el job no llega a arrancar, queda sin latido y la
+        # GUI lo marca como cortado (ver lanzador.scan_sin_latido).
+        nombres = [scanner.SITIOS_POR_ID[i]["nombre"] for i in ids_sitios]
+        almacen.escribir_texto(STATUS_FILE, json.dumps(scanner.estado_inicial(pais, nombres, pid=0), ensure_ascii=False))
+        lanzador.lanzar_job(JOB_NAME, argumentos, credenciales=_credenciales_gcp())
+        return
+
+    cmd = [sys.executable, "scan_getonbrd.py"] + argumentos
 
     # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
     # excepción no manejada, scan_status.json queda con "corriendo": true
@@ -173,61 +218,72 @@ with st.sidebar.expander("País y sitios", expanded=True):
     require_remote = st.checkbox("Solo ofertas remotas", value=scanner.REQUIRE_REMOTE)
 
 with st.sidebar.expander("Aviso por correo"):
-    config_email = scanner.cargar_config_email() or {}
-    email_listo = scanner.config_email_completa(config_email)
+    if JOB_NAME:
+        # En la nube el SMTP (cuenta y contraseña) lo tiene configurado el
+        # job, no se escribe ni se guarda desde esta pantalla: acá solo se
+        # elige a quién avisar.
+        destino_aviso = st.text_input("Correo que recibirá el aviso", key="email_destino_nube").strip()
+        config_email = {"destinatario": destino_aviso}
+        email_listo = "@" in destino_aviso
+        enviar_correo = st.checkbox("Enviar correo al terminar el scan", value=False, disabled=not email_listo)
+        guardar = probar = False
+    else:
+        config_email = scanner.cargar_config_email() or {}
+        email_listo = scanner.config_email_completa(config_email)
 
-    enviar_correo = st.checkbox(
-        "Enviar correo al terminar el scan", value=False, disabled=not email_listo,
-        help=None if email_listo else "Completa y guarda la configuración de abajo primero.",
-    )
-    if email_listo:
-        st.caption(f"Se enviará a {config_email['destinatario']}")
-
-    with st.form("form_email"):
-        email_destino = st.text_input("Correo que recibirá el aviso", value=config_email.get("destinatario", ""))
-        st.caption("Cuenta desde la que se envía (SMTP). Gmail: smtp.gmail.com, puerto 587, y una contraseña de aplicación.")
-        email_host = st.text_input("Servidor SMTP", value=config_email.get("host", "smtp.gmail.com"))
-        email_port = st.number_input("Puerto", value=int(config_email.get("port", 587)), min_value=1, max_value=65535, step=1)
-        email_usuario = st.text_input("Usuario (correo de envío)", value=config_email.get("usuario", ""))
-        email_password = st.text_input(
-            "Contraseña", type="password",
-            placeholder="(guardada — déjala vacía para no cambiarla)" if config_email.get("password") else "",
+        enviar_correo = st.checkbox(
+            "Enviar correo al terminar el scan", value=False, disabled=not email_listo,
+            help=None if email_listo else "Completa y guarda la configuración de abajo primero.",
         )
-        col_guardar, col_probar = st.columns(2)
-        guardar = col_guardar.form_submit_button("Guardar")
-        probar = col_probar.form_submit_button("Guardar y probar")
+        if email_listo:
+            st.caption(f"Se enviará a {config_email['destinatario']}")
 
-    if guardar or probar:
-        nueva_config = {
-            "host": email_host.strip(),
-            "port": int(email_port),
-            "usuario": email_usuario.strip(),
-            "password": email_password or config_email.get("password", ""),
-            "destinatario": email_destino.strip(),
-        }
-        nueva_config["remitente"] = config_email.get("remitente", "")
-        scanner.guardar_config_email(nueva_config)
-        if not scanner.config_email_completa(nueva_config):
-            mensaje = ("warning", "Guardado, pero faltan campos — el aviso no se activa hasta completarlos todos.")
-        elif probar:
-            error = scanner.enviar_correo_fin(
-                nueva_config["destinatario"], "Job Scanner — correo de prueba",
-                "Si lees esto, el aviso por correo del Job Scanner está bien configurado.",
+    if not JOB_NAME:
+        with st.form("form_email"):
+            email_destino = st.text_input("Correo que recibirá el aviso", value=config_email.get("destinatario", ""))
+            st.caption("Cuenta desde la que se envía (SMTP). Gmail: smtp.gmail.com, puerto 587, y una contraseña de aplicación.")
+            email_host = st.text_input("Servidor SMTP", value=config_email.get("host", "smtp.gmail.com"))
+            email_port = st.number_input("Puerto", value=int(config_email.get("port", 587)), min_value=1, max_value=65535, step=1)
+            email_usuario = st.text_input("Usuario (correo de envío)", value=config_email.get("usuario", ""))
+            email_password = st.text_input(
+                "Contraseña", type="password",
+                placeholder="(guardada — déjala vacía para no cambiarla)" if config_email.get("password") else "",
             )
-            if error:
-                mensaje = ("error", f"Guardado, pero no se pudo enviar el correo de prueba: {error}")
-            else:
-                mensaje = ("success", f"Guardado. Correo de prueba enviado a {nueva_config['destinatario']}")
-        else:
-            mensaje = ("success", "Guardado.")
-        # Rerun para que el checkbox y "Se enviará a..." de arriba lean la
-        # config recién guardada; el mensaje sobrevive vía session_state.
-        st.session_state["email_msg"] = mensaje
-        st.rerun()
+            col_guardar, col_probar = st.columns(2)
+            guardar = col_guardar.form_submit_button("Guardar")
+            probar = col_probar.form_submit_button("Guardar y probar")
 
-    if "email_msg" in st.session_state:
-        tipo, texto = st.session_state.pop("email_msg")
-        getattr(st, tipo)(texto)
+        if guardar or probar:
+            nueva_config = {
+                "host": email_host.strip(),
+                "port": int(email_port),
+                "usuario": email_usuario.strip(),
+                "password": email_password or config_email.get("password", ""),
+                "destinatario": email_destino.strip(),
+            }
+            nueva_config["remitente"] = config_email.get("remitente", "")
+            scanner.guardar_config_email(nueva_config)
+            if not scanner.config_email_completa(nueva_config):
+                mensaje = ("warning", "Guardado, pero faltan campos — el aviso no se activa hasta completarlos todos.")
+            elif probar:
+                error = scanner.enviar_correo_fin(
+                    nueva_config["destinatario"], "Job Scanner — correo de prueba",
+                    "Si lees esto, el aviso por correo del Job Scanner está bien configurado.",
+                )
+                if error:
+                    mensaje = ("error", f"Guardado, pero no se pudo enviar el correo de prueba: {error}")
+                else:
+                    mensaje = ("success", f"Guardado. Correo de prueba enviado a {nueva_config['destinatario']}")
+            else:
+                mensaje = ("success", "Guardado.")
+            # Rerun para que el checkbox y "Se enviará a..." de arriba lean la
+            # config recién guardada; el mensaje sobrevive vía session_state.
+            st.session_state["email_msg"] = mensaje
+            st.rerun()
+
+        if "email_msg" in st.session_state:
+            tipo, texto = st.session_state.pop("email_msg")
+            getattr(st, tipo)(texto)
 
 with st.sidebar.expander("Keywords", expanded=True):
     keywords_default = "\n".join(scanner.cargar_keywords(almacen=almacen))
@@ -275,7 +331,12 @@ with st.sidebar.expander("Generar keywords con Claude"):
 
 estado_previo = leer_estado_scan()
 marcado_corriendo = bool(estado_previo and estado_previo.get("corriendo"))
-proceso_muerto = marcado_corriendo and not proceso_sigue_vivo(estado_previo.get("pid", -1))
+if JOB_NAME:
+    # El scan corre en otra máquina: no hay PID que consultar, solo si dejó
+    # de actualizar su estado.
+    proceso_muerto = marcado_corriendo and lanzador.scan_sin_latido(estado_previo)
+else:
+    proceso_muerto = marcado_corriendo and not proceso_sigue_vivo(estado_previo.get("pid", -1))
 scan_corriendo = marcado_corriendo and not proceso_muerto
 
 col_buscar_completa, col_buscar, col_detener = st.columns([1, 1, 1])
@@ -295,10 +356,14 @@ if click_buscar or click_buscar_completa:
     if not keywords:
         st.error("No hay keywords para buscar.")
     else:
-        lanzar_scan(
-            pais, sitios_elegidos, keywords, require_remote, click_buscar_completa,
-            email_a=config_email["destinatario"] if enviar_correo and email_listo else None,
-        )
+        try:
+            lanzar_scan(
+                pais, sitios_elegidos, keywords, require_remote, click_buscar_completa,
+                email_a=config_email["destinatario"] if enviar_correo and email_listo else None,
+            )
+        except (lanzador.ErrorLanzador, almacenamiento.ErrorAlmacen) as e:
+            st.error(str(e))
+            st.stop()
         # Esperar a que el subproceso escriba su primer status.json (el
         # arranque de Python en Windows puede tardar más que un sleep fijo
         # corto) antes de refrescar la página — si el rerun cae antes de que
@@ -324,7 +389,9 @@ if proceso_muerto:
         f"({p.get('i', '?')}/{p.get('total', '?')}). "
         f"Las ofertas que ya había encontrado en este escaneo se guardaron igual."
     )
-    if os.path.exists(SCAN_LOG_FILE):
+    if JOB_NAME:
+        st.caption("El detalle del fallo está en los logs del servidor (el administrador recibe la alerta).")
+    elif os.path.exists(SCAN_LOG_FILE):
         with open(SCAN_LOG_FILE, encoding="utf-8", errors="replace") as f:
             contenido_log = f.read()
         # Este log llega a la pantalla del usuario: sin nombres del bucket.
