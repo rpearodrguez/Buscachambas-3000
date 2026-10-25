@@ -74,6 +74,8 @@ def _credenciales_gcp():
         info = dict(st.secrets["gcp_service_account"])
     except Exception:
         return None
+    if not info:  # sección presente pero vacía (p. ej. la plantilla sin rellenar)
+        return None
     from google.oauth2 import service_account
     return service_account.Credentials.from_service_account_info(info)
 
