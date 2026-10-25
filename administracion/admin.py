@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(RAIZ)  # admin_local.json y demás archivos locales viven en la raíz del repo
 
-from administracion import admin_nube, gasto, gasto_grafico  # noqa: E402
+from administracion import actividad, actividad_grafico, admin_nube, gasto, gasto_grafico  # noqa: E402
 from comun import limpieza, usuarios  # noqa: E402
 from comun import almacen as almacenamiento  # noqa: E402
 from escaner import scan_getonbrd as scanner  # noqa: E402  (solo para la lista de países)
@@ -48,9 +48,16 @@ def _mostrar_error(e: Exception, contexto: str):
 
 cfg = admin_nube.cargar_config_local()
 
-tab_conexion, tab_correo, tab_usuarios, tab_gastos, tab_limpieza = st.tabs(
-    ["Conexión", "Correo (SMTP)", "Usuarios", "Gastos", "Limpieza"]
-)
+# Tres grupos: Panel (lo que miras seguido), Gestión (lo que cambias) y Sistema (conexión y mantenimiento).
+# Sin conexión guardada todavía, se abre directo en Sistema → Conexión, que es el único paso posible.
+_primera_vez = not cfg
+tab_panel, tab_gestion, tab_sistema = st.tabs(["Panel", "Gestión", "Sistema"], default="Sistema" if _primera_vez else None)
+with tab_panel:
+    tab_actividad, tab_gastos = st.tabs(["Actividad", "Gastos"])
+with tab_gestion:
+    tab_usuarios, tab_correo = st.tabs(["Usuarios", "Correo y alertas"])
+with tab_sistema:
+    tab_conexion, tab_limpieza = st.tabs(["Conexión", "Limpieza"])
 
 # ---------------------------------------------------------------------------
 # Conexión
@@ -621,3 +628,65 @@ with tab_limpieza:
         st.info("Primero configura la conexión.")
     else:
         _pestana_limpieza(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Actividad
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=60, show_spinner=False)
+def _usos(destino: str, cfg_json: str):
+    return actividad.leer_usos(_almacen_raiz(destino, cfg_json))
+
+
+def _pestana_actividad(cfg):
+    st.subheader("Escaneos realizados")
+    st.caption(
+        "Cuenta los escaneos lanzados desde la GUI en la nube (los que corres desde tu PC no pasan por ahí). "
+        "Las fechas van en tu hora local. Se actualiza cada minuto."
+    )
+    cfg_json = json.dumps(cfg, sort_keys=True)
+    try:
+        usos = _usos(f"gs://{cfg['bucket']}", cfg_json)
+        datos = usuarios.cargar(_almacen_admin(admin_nube.destino_admin(cfg), cfg_json))
+    except Exception as e:
+        _mostrar_error(e, "No se pudo leer la actividad")
+        return
+    correos = limpieza.ids_vigentes(datos)
+    hoy = datetime.now().date()
+    t = actividad.totales(usos, hoy)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Hoy", t["hoy"])
+    k2.metric("Esta semana", t["semana"])
+    k3.metric("Este mes", t["mes"])
+    k4.metric("Este año", t["anio"])
+    k5.metric("En total", t["total"])
+    if t["ultimo"] is None:
+        st.info("Todavía no se registra ningún escaneo.")
+        return
+    st.caption(f"Último escaneo: {datetime.fromtimestamp(t['ultimo']):%Y-%m-%d %H:%M}.")
+
+    g = st.radio("Agrupar por", actividad.GRANULARIDADES, index=0, horizontal=True, key="actividad_gran",
+                 format_func=lambda x: actividad.NOMBRES[x])
+    claves = actividad.periodos(g, actividad.VENTANA_POR_DEFECTO[g], hoy)
+    filas = actividad.serie(usos, correos, g, claves)
+    if filas:
+        grafico = actividad_grafico.agrupar_usuarios(filas)
+        etiquetas = [actividad.etiqueta_de(c, g) for c in claves]
+        st.altair_chart(actividad_grafico.construir(grafico, etiquetas, _tema_oscuro(), actividad.NOMBRES[g].lower()),
+                        width="stretch", theme=None)
+    else:
+        st.info(f"No hubo escaneos en los últimos {actividad.VENTANA_POR_DEFECTO[g]} períodos de este tipo.")
+    st.markdown("**Por usuario**")
+    st.dataframe(
+        [{"usuario": f["usuario"], "escaneos este mes": f["este_mes"], "total": f["total"],
+          "último": datetime.fromtimestamp(f["ultimo"]).strftime("%Y-%m-%d %H:%M")}
+         for f in actividad.tabla_por_usuario(usos, correos, hoy)],
+        width="stretch", hide_index=True,
+    )
+
+
+with tab_actividad:
+    if not cfg:
+        st.info("Primero configura la conexión.")
+    else:
+        _pestana_actividad(cfg)

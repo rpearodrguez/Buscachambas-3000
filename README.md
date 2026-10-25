@@ -265,11 +265,13 @@ exige login con Google (`st.login`, necesita `Authlib` y `httpx`):
   completo de la ejecución adjunto** (`log_escaneo.txt`). Si el almacenamiento no se puede usar, también avisa.
 - La persona no ve la traza: solo "El escaneo terminó con un error inesperado. El administrador fue
   avisado por correo." (la traza y el log van solo a tu correo).
-- El correo del administrador se configura en la pestaña *Correo (SMTP)* de `administracion/admin.py`
+- El correo del administrador se configura en *Gestión → Correo y alertas* de `administracion/admin.py`
   (queda en la variable `BUSCACHAMBAS_ADMIN_EMAIL` del job); "Guardar y probar alerta" manda una alerta de
   ejemplo con un log de ejemplo. Vacío = nadie recibe avisos.
-- **No cubre** el caso en que Google mata el job sin darle tiempo a avisar (se pasa de las 2 horas o se
-  queda sin memoria). Para eso serviría una alerta de Cloud Monitoring sobre ejecuciones fallidas (pendiente).
+- **Si Google mata el job** sin darle tiempo a avisar (se pasa de las 2 horas o se queda sin memoria), avisa una
+  política de **Cloud Monitoring** sobre ejecuciones del job que no terminan bien, con un canal de correo al
+  administrador (`BUSCACHAMBAS_ADMIN_EMAIL`). Se creó una vez con la API de Monitoring; vive en el proyecto, no en el repo.
+  Cuando el proceso alcanza a avisar por su cuenta llegan los dos correos.
 
 ## Publicar y mantener
 
@@ -334,8 +336,13 @@ gcloud auth application-default login      # una vez, con tu cuenta de Google
 streamlit run administracion/admin.py --server.address localhost --server.port 8510
 ```
 
-Pestañas:
+Las pestañas van en tres grupos: **Panel** (Actividad, Gastos), **Gestión** (Usuarios, Correo y alertas) y
+**Sistema** (Conexión, Limpieza). Sin una conexión guardada se abre directo en Sistema → Conexión.
 
+- **Actividad:** cuántos escaneos se han hecho hoy, esta semana, este mes, este año y en total, y un gráfico apilado
+  por persona agrupado por día, semana (desde el lunes), mes o año, con una tabla por usuario. Cuenta los escaneos
+  lanzados desde la versión en la nube (los de tu PC no pasan por ahí) y usa tu hora local. Lógica en
+  `administracion/actividad.py`, gráfico en `administracion/actividad_grafico.py`.
 - **Conexión:** proyecto, región, job, bucket, nombre del secreto y (opcional) la tabla de facturación.
   Se guardan en `admin_local.json` (en `.gitignore`; el repo es público).
 - **Correo (SMTP):** servidor, puerto y usuario se escriben en las variables del job; el token va a Secret
@@ -550,13 +557,8 @@ No hay integración en vivo: es un puente manual en dos puntos:
 
 ## Pendientes
 
-- **Panel de actividad** en la herramienta de administración: cuántos escaneos se han hecho por día, semana,
-  mes y año, por persona. La lógica y el gráfico ya están (`administracion/actividad.py`,
-  `administracion/actividad_grafico.py`, con tests); falta la pantalla. Cuenta los escaneos lanzados desde la
-  versión en la nube (los de tu PC no pasan por ahí).
-- **Ordenar los menús** de la herramienta de administración en grupos (por ejemplo Panel / Gestión / Sistema).
-- **Alerta de Cloud Monitoring** para los jobs que Google mata sin dejar que avisen (tiempo límite o memoria).
 - **Publicar la app de OAuth en producción** (hoy está en modo *Testing*): Google exige una página de inicio y
   una política de privacidad públicas; mientras tanto cada persona nueva se agrega como usuario de prueba.
-- Probar la cuota semanal con una cuenta que no sea administradora (la lógica está probada con tests).
+- **Probar de verdad la alerta de Cloud Monitoring**: está creada, pero no se ha forzado una ejecución muerta por
+  Google para ver llegar el correo.
 - Más países además de Chile y Colombia: mismo proceso de investigación que se usó para los sitios actuales.
