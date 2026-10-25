@@ -21,6 +21,7 @@ no se puede volver a leer desde aquí.
 import json
 import os
 import sys
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
@@ -292,7 +293,10 @@ with tab_gastos:
 
             datos = gasto.serie_diaria(filas, medida)
             if datos and any(d["monto"] for d in datos):
-                st.altair_chart(gasto_grafico.construir(datos, moneda, _tema_oscuro()), width="stretch", theme=None)
+                # días en UTC, como los agrupa la consulta (DATE(usage_start_time))
+                hoy_utc = datetime.now(timezone.utc).date()
+                periodo = gasto.dias_del_periodo(dias, max(hoy_utc, date.fromisoformat(max(d["dia"] for d in datos))))
+                st.altair_chart(gasto_grafico.construir(datos, moneda, _tema_oscuro(), periodo), width="stretch", theme=None)
             else:
                 st.info("En este período no hay gasto en la medida elegida (los créditos lo cubren todo).")
 

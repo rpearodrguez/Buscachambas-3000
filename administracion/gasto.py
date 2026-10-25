@@ -18,20 +18,26 @@ color, aunque otro servicio aparezca o desaparezca; todo lo demás se pliega en
 
 from collections import defaultdict
 
-# Servicios que usa esta herramienta, en un orden fijo: su posición es su color.
+# Los servicios que de verdad aparecen en la factura de esta herramienta (el job y el bucket, y la VM y
+# su red), en un orden fijo: su posición es su color. Todo lo demás se pliega en "Otros".
 SERVICIOS_CONOCIDOS = [
     "Cloud Run",
-    "Cloud Storage",
     "Compute Engine",
+    "Networking",
+    "VM Manager",
+    "Cloud Storage",
     "Secret Manager",
     "Artifact Registry",
-    "Cloud Build",
 ]
 OTROS = "Otros"
 
-# Primeros seis de los siete tonos validados, mismo orden en ambos modos.
-PALETA_CLARA = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
-PALETA_OSCURA = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300"]
+# Líneas de la factura que no son consumo de un servicio (ajustes de redondeo, etc.): no se grafican,
+# porque aparecen en negativo y dibujarían una barra bajo cero. Siguen en los totales y en la tabla.
+AJUSTES_DE_FACTURA = {"Invoice"}
+
+# Los siete tonos validados (scripts/validate_palette.js, modos claro y oscuro), mismo orden en ambos.
+PALETA_CLARA = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
+PALETA_OSCURA = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9"]
 GRIS_OTROS = "#898781"  # tono "muted" de la paleta, igual en ambos modos
 
 MEDIDAS = ("bruto", "neto")
@@ -95,6 +101,8 @@ def serie_diaria(filas: list[dict], medida: str) -> list[dict]:
     Días ordenados; `orden` fija el apilado (el primero abajo, como la leyenda)."""
     acumulado = defaultdict(float)
     for f in filas:
+        if f["servicio"] in AJUSTES_DE_FACTURA:
+            continue
         acumulado[(str(f["dia"])[:10], nombre_de_serie(f["servicio"]))] += monto(f, medida)
     return [
         {"dia": d, "etiqueta": etiqueta_de_dia(d), "servicio": s, "orden": orden_de_serie(s), "monto": round(v, 6)}
@@ -108,6 +116,14 @@ def etiquetas_en_orden(datos: list[dict]) -> list[str]:
     for d in sorted(datos, key=lambda x: x["dia"]):
         vistas.setdefault(d["etiqueta"], None)
     return list(vistas)
+
+
+def dias_del_periodo(dias: int, hasta) -> list[str]:
+    """Todos los días ISO de los últimos `dias` días terminando en `hasta` (un date), para que el eje
+    muestre también los días sin datos en vez de juntar los que sí tienen."""
+    from datetime import timedelta
+
+    return [(hasta - timedelta(days=i)).isoformat() for i in range(dias - 1, -1, -1)]
 
 
 def series_presentes(datos: list[dict]) -> list[str]:

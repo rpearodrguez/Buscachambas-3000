@@ -50,8 +50,9 @@ class SerieTests(unittest.TestCase):
     def test_desconocidos_se_pliegan_en_otros(self):
         datos = gasto.serie_diaria(FILAS, "bruto")
         dia2 = {d["servicio"]: d["monto"] for d in datos if d["dia"] == "2026-10-02"}
-        self.assertEqual(set(dia2), {"Cloud Run", "Otros"})
-        self.assertAlmostEqual(dia2["Otros"], 0.03)  # Logging + Networking
+        self.assertEqual(set(dia2), {"Cloud Run", "Networking", "Otros"})  # Networking tiene color propio
+        self.assertAlmostEqual(dia2["Otros"], 0.01)  # solo Cloud Logging
+        self.assertAlmostEqual(dia2["Networking"], 0.02)
         self.assertAlmostEqual(dia2["Cloud Run"], 0.05)
 
     def test_neto_usa_los_creditos(self):
@@ -72,13 +73,34 @@ class SerieTests(unittest.TestCase):
         self.assertGreater(orden["Otros"], orden["Compute Engine"])  # "Otros" va arriba del todo
         self.assertEqual(gasto.etiquetas_en_orden(datos), ["01 oct", "02 oct"])
 
+    def test_la_vm_y_su_red_tienen_color_propio(self):
+        for servicio in ("Compute Engine", "Networking", "VM Manager"):
+            self.assertIn(servicio, gasto.SERVICIOS_CONOCIDOS)
+
+    def test_los_ajustes_de_factura_no_se_grafican_pero_si_cuentan_en_totales_y_tabla(self):
+        con_ajuste = FILAS + [{"dia": "2026-10-01", "proyecto": "p1", "servicio": "Invoice", "moneda": "USD", "bruto": -0.0025, "creditos": 0.0}]
+        datos = gasto.serie_diaria(con_ajuste, "bruto")
+        self.assertTrue(all(d["monto"] >= 0 for d in datos))  # ninguna barra bajo cero
+        self.assertNotIn("Invoice", {d["servicio"] for d in datos})
+        self.assertNotIn("Otros", {d["servicio"] for d in datos if d["dia"] == "2026-10-01"})  # el ajuste no se pliega en "Otros"
+        self.assertAlmostEqual(gasto.totales(con_ajuste)["bruto"], 0.50 - 0.0025)
+        self.assertIn("Invoice", [r["servicio"] for r in gasto.tabla_por_servicio(con_ajuste)])
+
+    def test_dias_del_periodo_incluye_los_dias_sin_datos(self):
+        from datetime import date
+
+        dias = gasto.dias_del_periodo(5, date(2026, 10, 25))
+        self.assertEqual(dias, ["2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25"])
+        self.assertEqual(len(gasto.dias_del_periodo(90, date(2026, 10, 25))), 90)
+        self.assertEqual(gasto.dias_del_periodo(1, date(2026, 1, 1)), ["2026-01-01"])
+
     def test_dias_ordenados(self):
         dias = [d["dia"] for d in gasto.serie_diaria(FILAS, "bruto")]
         self.assertEqual(dias, sorted(dias))
 
     def test_series_presentes_en_orden_fijo_con_otros_al_final(self):
         datos = gasto.serie_diaria(FILAS, "bruto")
-        self.assertEqual(gasto.series_presentes(datos), ["Cloud Run", "Cloud Storage", "Compute Engine", "Otros"])
+        self.assertEqual(gasto.series_presentes(datos), ["Cloud Run", "Compute Engine", "Networking", "Cloud Storage", "Otros"])
 
     def test_el_color_sigue_a_la_entidad_no_al_ranking(self):
         solo_run = gasto.series_presentes(gasto.serie_diaria([FILAS[0]], "bruto"))

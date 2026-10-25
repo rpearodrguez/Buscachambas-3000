@@ -18,9 +18,11 @@ REJILLA = {"claro": "#e1e0d9", "oscuro": "#2c2c2a"}
 TINTA_APAGADA = "#898781"  # etiquetas de ejes, igual en ambos modos
 
 
-def construir(datos: list[dict], moneda: str, oscuro: bool) -> alt.Chart:
+def construir(datos: list[dict], moneda: str, oscuro: bool, dias: list[str] | None = None) -> alt.Chart:
+    """dias: todos los días del período (ISO, en orden); si se pasa, el eje los muestra todos, con o sin datos."""
     modo = "oscuro" if oscuro else "claro"
     series = gasto.series_presentes(datos)
+    eje_dias = [gasto.etiqueta_de_dia(d) for d in dias] if dias else gasto.etiquetas_en_orden(datos)
     return (
         alt.Chart(alt.Data(values=datos))
         .mark_bar(stroke=SUPERFICIE[modo], strokeWidth=2)  # 2px de fondo entre segmentos
@@ -28,7 +30,7 @@ def construir(datos: list[dict], moneda: str, oscuro: bool) -> alt.Chart:
             # Un día = una barra con ancho propio (un eje temporal continuo las deja finísimas),
             # y la etiqueta ya viene como texto (ver gasto.etiqueta_de_dia: evita el corrimiento de zona horaria).
             x=alt.X(
-                "etiqueta:O", title=None, sort=gasto.etiquetas_en_orden(datos),
+                "etiqueta:O", title=None, sort=eje_dias, scale=alt.Scale(domain=eje_dias),
                 axis=alt.Axis(labelAngle=0, labelOverlap="parity", labelColor=TINTA_APAGADA,
                               domainColor=REJILLA[modo], tickColor=REJILLA[modo], grid=False),
             ),
