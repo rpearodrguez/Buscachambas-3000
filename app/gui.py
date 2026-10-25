@@ -77,11 +77,20 @@ def _credenciales_gcp():
     try:
         info = dict(st.secrets["gcp_service_account"])
     except Exception:
-        return None
-    if not info:  # sección presente pero vacía (p. ej. la plantilla sin rellenar)
-        return None
+        info = None
     from google.oauth2 import service_account
-    return service_account.Credentials.from_service_account_info(info)
+    if info:  # una sección vacía (p. ej. la plantilla sin rellenar) cuenta como ausente
+        return service_account.Credentials.from_service_account_info(info)
+    # Alternativa para tu PC: ruta del archivo de la llave en BUSCACHAMBAS_GCP_KEYFILE
+    # (así no hay que definir GOOGLE_APPLICATION_CREDENTIALS en cada ventana nueva).
+    ruta = _config("BUSCACHAMBAS_GCP_KEYFILE")
+    if ruta:
+        try:
+            return service_account.Credentials.from_service_account_file(os.path.expanduser(ruta))
+        except (OSError, ValueError) as e:
+            # El detalle (con la ruta) solo al log del servidor, no a la pantalla.
+            print(f"[gui] No se pudo leer el archivo de credenciales configurado: {type(e).__name__}", file=sys.stderr)
+    return None
 
 
 # BUSCACHAMBAS_MODO=local fuerza el modo local (archivos en esta carpeta, sin login ni
