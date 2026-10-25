@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(RAIZ)  # estado, CSV, keywords y logs locales viven en la raíz del repo, no en app/
 
-from comun import acceso, lanzador, usuarios  # noqa: E402
+from comun import acceso, ajustes, lanzador, usuarios  # noqa: E402
 from comun import almacen as almacenamiento  # noqa: E402
 from escaner import extraer_oferta as extractor  # noqa: E402
 from escaner import scan_getonbrd as scanner  # noqa: E402
@@ -133,12 +133,21 @@ def _lista_de_usuarios(_almacen_admin):
     return usuarios.cargar(_almacen_admin)
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _ajustes_del_admin(_almacen_admin):
+    try:
+        return ajustes.cargar(_almacen_admin)
+    except almacenamiento.ErrorAlmacen:
+        return {}  # un ajuste que no se puede leer no debe impedir entrar
+
+
 if JOB_NAME and not STORAGE_BASE:
     st.error("Configuración incompleta: el escaneo en la nube necesita almacenamiento compartido.")
     st.stop()
 
 usuario_email = None
 info_usuario = None
+ajustes_del_admin = {}
 USUARIO_ID = USUARIO_LOCAL
 if JOB_NAME:
     # --- login y lista de usuarios (todo falla cerrado) ---
@@ -158,8 +167,9 @@ if JOB_NAME:
         st.button("Iniciar sesión con Google", on_click=st.login)
         st.stop()
 
+    almacen_admin = _almacen_o_detener(f"{STORAGE_BASE.rstrip('/')}/admin")
     try:
-        lista_usuarios = _lista_de_usuarios(_almacen_o_detener(f"{STORAGE_BASE.rstrip('/')}/admin"))
+        lista_usuarios = _lista_de_usuarios(almacen_admin)
     except (usuarios.ErrorUsuarios, almacenamiento.ErrorAlmacen):
         st.error("No se pudo verificar tu acceso en este momento. Inténtalo más tarde.")
         st.stop()
@@ -175,6 +185,7 @@ if JOB_NAME:
         st.button("Cerrar sesión", on_click=st.logout)
         st.stop()
 
+    ajustes_del_admin = _ajustes_del_admin(almacen_admin)
     usuario_email = usuarios.normalizar_correo(st.user.get("email"))
     USUARIO_ID = almacenamiento.id_usuario(usuario_email)
     st.sidebar.caption(f"Sesión iniciada como {usuario_email}")
@@ -290,18 +301,75 @@ def extraer_texto_documento(archivo) -> str:
 # Sidebar: configuración del scan
 # ---------------------------------------------------------------------------
 
+PREFS_FILE = "preferencias.json"
+
+
+def _cargar_prefs() -> dict:
+    """Elecciones guardadas del usuario (país, sitios, solo remotas, aviso por correo).
+    Las keywords NO van acá: solo se conservan si el usuario las guarda con el botón."""
+    try:
+        datos = json.loads(almacen.leer_texto(PREFS_FILE) or "{}")
+    except (ValueError, almacenamiento.ErrorAlmacen):
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def _guardar_prefs(prefs: dict) -> None:
+    try:
+        almacen.escribir_texto(PREFS_FILE, json.dumps(prefs, ensure_ascii=False))
+    except almacenamiento.ErrorAlmacen:
+        pass  # una preferencia que no se guarda no debe romper la página
+
+
+def _keywords_guardadas() -> str:
+    """Las keywords que el usuario guardó con el botón (keywords.txt de su carpeta); vacío si nunca guardó."""
+    try:
+        texto = almacen.leer_texto(scanner.KEYWORDS_FILE_DEFAULT) or ""
+    except almacenamiento.ErrorAlmacen:
+        return ""
+    return "\n".join(l.strip() for l in texto.splitlines() if l.strip() and not l.strip().startswith("#"))
+
+
+# Estado inicial de la sesión, una sola vez. En la nube, un usuario nuevo parte VACÍO (sin las
+# keywords de nadie) y con todo seleccionado; si ya usó la herramienta, vuelven sus elecciones.
+if "_iniciado" not in st.session_state:
+    prefs = _cargar_prefs() if JOB_NAME else {}
+    # Un usuario sin elecciones guardadas parte en el país que definió el administrador (si lo hizo).
+    pais_inicial = (
+        prefs.get("pais") if prefs.get("pais") in scanner.PAISES
+        else ajustes.pais_por_defecto(ajustes_del_admin, scanner.PAISES) or next(iter(scanner.PAISES))
+    )
+    ids_pais = scanner.PAISES[pais_inicial]
+    if isinstance(prefs.get("sitios"), list):
+        sitios_iniciales = [i for i in prefs["sitios"] if i in ids_pais]
+    else:
+        sitios_iniciales = list(ids_pais)
+    st.session_state.update({
+        "pais_sel": pais_inicial,
+        "_pais_prev": pais_inicial,
+        "sitios_sel": sitios_iniciales,
+        "solo_remotas_sel": bool(prefs.get("solo_remotas", scanner.REQUIRE_REMOTE)),
+        "aviso_correo_sel": bool(prefs.get("aviso_correo", False)),
+        "keywords_text": _keywords_guardadas() if JOB_NAME else "\n".join(scanner.cargar_keywords(almacen=almacen)),
+        "prefs_guardadas": prefs or None,
+        "_iniciado": True,
+    })
+
 st.sidebar.header("Configuración")
 
 with st.sidebar.expander("País y sitios", expanded=True):
-    pais = st.selectbox("País", list(scanner.PAISES.keys()))
+    pais = st.selectbox("País", list(scanner.PAISES.keys()), key="pais_sel")
     ids_disponibles = scanner.PAISES[pais]
+    if st.session_state["_pais_prev"] != pais:  # cambió el país: los sitios disponibles son otros
+        st.session_state["sitios_sel"] = list(ids_disponibles)
+        st.session_state["_pais_prev"] = pais
     sitios_elegidos = st.multiselect(
         "Sitios a escanear",
         options=ids_disponibles,
-        default=ids_disponibles,
         format_func=lambda i: scanner.SITIOS_POR_ID[i]["nombre"],
+        key="sitios_sel",
     )
-    require_remote = st.checkbox("Solo ofertas remotas", value=scanner.REQUIRE_REMOTE)
+    require_remote = st.checkbox("Solo ofertas remotas", key="solo_remotas_sel")
 
 with st.sidebar.expander("Aviso por correo"):
     if JOB_NAME:
@@ -311,7 +379,7 @@ with st.sidebar.expander("Aviso por correo"):
         # (permitiría usar la cuenta de envío para escribirle a terceros).
         config_email = {"destinatario": usuario_email}
         email_listo = True
-        enviar_correo = st.checkbox(f"Avisarme por correo a {usuario_email} al terminar", value=False)
+        enviar_correo = st.checkbox(f"Avisarme por correo a {usuario_email} al terminar", key="aviso_correo_sel")
         guardar = probar = False
     else:
         config_email = scanner.cargar_config_email() or {}
@@ -372,8 +440,7 @@ with st.sidebar.expander("Aviso por correo"):
             getattr(st, tipo)(texto)
 
 with st.sidebar.expander("Keywords", expanded=True):
-    keywords_default = "\n".join(scanner.cargar_keywords(almacen=almacen))
-    keywords_text = st.text_area("Una por línea", value=keywords_default, height=180)
+    keywords_text = st.text_area("Una por línea", height=180, key="keywords_text")
     keywords = [k.strip() for k in keywords_text.splitlines() if k.strip()]
 
     if st.button("Guardar keywords en keywords.txt"):
@@ -414,6 +481,17 @@ with st.sidebar.expander("Generar keywords con Claude"):
 # arriba. El estado "¿está corriendo?" se lee siempre del archivo en disco,
 # nunca de session_state, para que sobreviva a reinicios de esta página.)
 # ---------------------------------------------------------------------------
+
+if JOB_NAME:
+    prefs_actuales = {
+        "pais": pais,
+        "sitios": list(sitios_elegidos),
+        "solo_remotas": bool(require_remote),
+        "aviso_correo": bool(enviar_correo),
+    }
+    if prefs_actuales != st.session_state.get("prefs_guardadas"):
+        _guardar_prefs(prefs_actuales)
+        st.session_state["prefs_guardadas"] = prefs_actuales
 
 estado_previo = leer_estado_scan()
 marcado_corriendo = bool(estado_previo and estado_previo.get("corriendo"))

@@ -30,7 +30,9 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(RAIZ)  # admin_local.json y demás archivos locales viven en la raíz del repo
 
 from administracion import admin_nube, gasto, gasto_grafico  # noqa: E402
-from comun import almacen as almacenamiento, usuarios  # noqa: E402
+from comun import ajustes, usuarios  # noqa: E402
+from comun import almacen as almacenamiento  # noqa: E402
+from escaner import scan_getonbrd as scanner  # noqa: E402  (solo para la lista de países)
 
 st.set_page_config(page_title="Administración — Job Scanner", layout="wide")
 st.title("Administración")
@@ -43,7 +45,9 @@ def _mostrar_error(e: Exception, contexto: str):
 
 cfg = admin_nube.cargar_config_local()
 
-tab_conexion, tab_correo, tab_usuarios, tab_gastos = st.tabs(["Conexión", "Correo (SMTP)", "Usuarios", "Gastos"])
+tab_conexion, tab_correo, tab_usuarios, tab_general, tab_gastos = st.tabs(
+    ["Conexión", "Correo (SMTP)", "Usuarios", "General", "Gastos"]
+)
 
 # ---------------------------------------------------------------------------
 # Conexión
@@ -192,11 +196,44 @@ def _pestana_usuarios(cfg):
                     _mostrar_error(e, "No se pudo quitar")
 
 
+def _pestana_general(cfg):
+    st.subheader("Ajustes generales")
+    try:
+        almacen_admin = _almacen_admin(admin_nube.destino_admin(cfg))
+        actuales = ajustes.cargar(almacen_admin)
+    except Exception as e:
+        _mostrar_error(e, "No se pudieron leer los ajustes")
+        return  # solo esta pestaña falla; las demás siguen
+
+    paises = list(scanner.PAISES)
+    actual = ajustes.pais_por_defecto(actuales, paises) or paises[0]
+    with st.form("form_general"):
+        pais = st.selectbox("País con el que parten los usuarios nuevos", paises, index=paises.index(actual))
+        st.caption(
+            "Solo vale para quien todavía no tiene elecciones guardadas: después cada usuario elige "
+            "su país, sitios y opciones, y se le recuerdan."
+        )
+        if st.form_submit_button("Guardar"):
+            try:
+                ajustes.guardar(almacen_admin, ajustes.con_pais_por_defecto(actuales, pais, paises))
+                st.success(f"Listo: los usuarios nuevos partirán en {pais}.")
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                _mostrar_error(e, "No se pudo guardar")
+
+
 with tab_usuarios:
     if not cfg:
         st.info("Primero configura la conexión.")
     else:
         _pestana_usuarios(cfg)
+
+with tab_general:
+    if not cfg:
+        st.info("Primero configura la conexión.")
+    else:
+        _pestana_general(cfg)
 
 # ---------------------------------------------------------------------------
 # Gastos

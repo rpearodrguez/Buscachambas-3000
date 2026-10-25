@@ -165,6 +165,12 @@ exige login con Google (`st.login`, necesita `Authlib`):
   usuario (candado atómico en el bucket) y un **tope global** de scans
   simultáneos (`BUSCACHAMBAS_MAX_SIMULTANEOS`, 2 por defecto).
 - El aviso por correo va siempre al correo con el que se inició sesión.
+- **Primera sesión vacía:** un usuario nuevo no ve ninguna keyword (las de ejemplo del código no
+  se le muestran) y parte con todos los sitios marcados. Después se le recuerdan por usuario el
+  país, los sitios, "solo remotas" y el aviso por correo (`preferencias.json` en su carpeta).
+  Las **keywords no se recuerdan** salvo que las guarde con el botón "Guardar keywords".
+- **País por defecto:** lo elige el administrador en la pestaña *General* de `administracion/admin.py`
+  (`admin/ajustes.json`); solo vale para quien aún no tiene elecciones guardadas.
 - Sin esas variables (tu PC), todo sigue igual que antes: sin login ni cuotas.
 
 Lógica en `comun/acceso.py` y `comun/usuarios.py`, con tests (`python -m unittest discover -s tests`).
@@ -188,6 +194,7 @@ streamlit run administracion/admin.py --server.address localhost
   del job; el token va a Secret Manager sin mostrarse y no se puede volver a
   leer (se conservan la versión nueva y la anterior). "Guardar y probar"
   ejecuta el job con `--probar-correo`, así se prueba el camino real.
+- **General:** país con el que parten los usuarios nuevos.
 - **Usuarios:** lista de correos autorizados, con rol y cuota de scans por
   semana (1 por defecto). Vive en la parte `admin/` del bucket privado.
 - **Gastos:** gráfico del gasto diario por servicio (barras apiladas, bruto o
