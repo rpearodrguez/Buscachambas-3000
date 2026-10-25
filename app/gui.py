@@ -291,6 +291,49 @@ def extraer_texto_documento(archivo) -> str:
 # Sidebar: configuración del scan
 # ---------------------------------------------------------------------------
 
+def _ofrecer_envio_manual(estado):
+    """Botón para mandar por correo el resultado de un escaneo ya terminado, por si se olvidó marcar el aviso.
+    Una sola vez por escaneo (una marca atómica en el almacenamiento lo impide aunque se haga doble clic o se
+    abra otra pestaña), y siempre al correo del propio usuario. En la nube lo manda el job (la GUI pública no
+    tiene la contraseña del correo); en local, la propia GUI."""
+    destino = usuario_email if JOB_NAME else (config_email.get("destinatario") if email_listo else None)
+    if not destino:
+        st.caption("Para recibir este resultado por correo, configura el aviso en la barra lateral.")
+        return
+    inicio = estado.get("inicio_ts")
+    if not inicio:
+        return
+    if almacen.existe(scanner.nombre_marca_correo(inicio)):
+        st.caption("✉ Ya se pidió el envío de este resultado por correo (solo se permite una vez por escaneo).")
+        return
+    if not st.button(f"✉ Enviar este resultado por correo a {destino}", key="enviar_manual"):
+        return
+    try:
+        if not scanner.crear_marca_correo(almacen, inicio):
+            st.warning("Este resultado ya se pidió enviar por correo.")
+            return
+        if JOB_NAME:
+            try:
+                lanzador.lanzar_job(
+                    JOB_NAME,
+                    ["--enviar-resultado", destino, "--inicio-ts", repr(inicio), "--status-file", STATUS_FILE, "--storage", STORAGE_DESTINO],
+                    credenciales=_credenciales_gcp(),
+                )
+            except lanzador.ErrorLanzador:
+                almacen.borrar(scanner.nombre_marca_correo(inicio))  # no salió nada: se puede reintentar
+                raise
+            st.success("Listo: el correo llega en un minuto.")
+        else:
+            error = scanner.reenviar_resultado(almacen, destino, inicio)
+            if error:
+                almacen.borrar(scanner.nombre_marca_correo(inicio))
+                st.error(f"No se pudo enviar el correo: {error}")
+            else:
+                st.rerun()
+    except (lanzador.ErrorLanzador, almacenamiento.ErrorAlmacen) as e:
+        st.error(str(e))
+
+
 PREFS_FILE = "preferencias.json"
 
 
@@ -629,11 +672,12 @@ elif estado_previo and estado_previo.get("resultado"):
     if r.get("duracion_seg") is not None:
         st.caption(f"⏱ Duración del último escaneo: {scanner.formatear_duracion(r['duracion_seg'])}")
     correo = estado_previo.get("correo")
-    if correo:
-        if correo["enviado"]:
-            st.caption("✉ Correo de aviso enviado.")
-        else:
+    if correo and correo["enviado"]:
+        st.caption("✉ Correo de aviso enviado.")
+    else:
+        if correo:
             st.warning(f"No se pudo enviar el correo de aviso: {correo['error']}")
+        _ofrecer_envio_manual(estado_previo)
     errores = estado_previo.get("errores", [])
     if errores:
         with st.expander(f"⚠ Hubo {len(errores)} error(es) durante el scan"):

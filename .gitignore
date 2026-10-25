@@ -21,3 +21,4 @@ email_config.json
 .env
 .env.*
 admin_local.json
+correo_*.flag

@@ -164,7 +164,10 @@ exige login con Google (`st.login`, necesita `Authlib`):
   defecto; los administradores no tienen tope). **Un scan a la vez** por
   usuario (candado atómico en el bucket) y un **tope global** de scans
   simultáneos (`BUSCACHAMBAS_MAX_SIMULTANEOS`, 2 por defecto).
-- El aviso por correo va siempre al correo con el que se inició sesión.
+- El aviso por correo va siempre al correo con el que se inició sesión. Si se olvidó marcarlo, al terminar el escaneo
+  aparece el botón **«Enviar este resultado por correo»**: lo manda el job (la GUI pública no tiene la contraseña del
+  correo), con el mismo resumen y el CSV adjunto, y **solo una vez por escaneo** (una marca atómica en el
+  almacenamiento lo impide aunque se haga doble clic o se abra otra pestaña; si el envío falla, se libera para reintentar).
 - **Primera sesión vacía:** un usuario nuevo no ve ninguna keyword (las de ejemplo del código no
   se le muestran) y parte con todos los sitios marcados. Después se le recuerdan por usuario el
   país, los sitios, "solo remotas" y el aviso por correo (`preferencias.json` en su carpeta).

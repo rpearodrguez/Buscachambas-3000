@@ -1627,6 +1627,58 @@ class EscritorEstado:
         self._guardar(forzar=True)
 
 
+def nombre_marca_correo(inicio_ts: float) -> str:
+    """Archivo-marca de "ya se pidió enviar por correo el resultado de este escaneo". El escaneo se identifica
+    por su hora de inicio, así que un escaneo nuevo tiene una marca distinta y se puede volver a pedir."""
+    return f"correo_{int(inicio_ts)}.flag"
+
+
+def crear_marca_correo(almacen: Almacen, inicio_ts: float) -> bool:
+    """Reserva, de forma atómica, el único envío manual de este escaneo. True si lo reservó; False si ya se
+    había pedido (doble clic, otra pestaña). Al reservar, borra las marcas de escaneos anteriores: nunca
+    queda más de una por usuario."""
+    nombre = nombre_marca_correo(inicio_ts)
+    if almacen.existe(nombre):
+        return False
+    for vieja in almacen.listar("correo_"):
+        if vieja.endswith(".flag") and vieja != nombre:
+            almacen.borrar(vieja)
+    return almacen.crear_si_no_existe(nombre, b"1")
+
+
+def reenviar_resultado(almacen: Almacen, destinatario: str, inicio_ts: float | None = None,
+                       status_file: str = "scan_status.json") -> str | None:
+    """Manda por correo el resultado del último escaneo terminado (el mismo correo que se manda al final de
+    un scan, con el CSV adjunto) y deja anotado en el estado que se envió. Devuelve None si salió bien o el
+    motivo del fallo. `inicio_ts`: el escaneo que se pidió enviar; si el estado ya es de otro (se lanzó uno
+    nuevo mientras tanto), no se manda, para no mezclar resultados."""
+    try:
+        texto = almacen.leer_texto(status_file)
+        estado = json.loads(texto) if texto else None
+    except (json.JSONDecodeError, ErrorAlmacen):
+        estado = None
+    if not estado:
+        return "no hay un escaneo cuyo resultado enviar"
+    if estado.get("corriendo"):
+        return "el escaneo sigue en curso"
+    resultado = estado.get("resultado")
+    if not resultado:
+        return "el escaneo no terminó"
+    if inicio_ts is not None and abs(float(estado.get("inicio_ts") or 0) - float(inicio_ts)) > 1:
+        return "el estado ya es de otro escaneo"
+
+    csv_bytes = almacen.leer(OUTPUT_CSV)
+    filas_finales = list(csv.DictReader(io.StringIO(csv_bytes.decode("utf-8"), newline=""))) if csv_bytes else []
+    asunto, cuerpo = armar_correo_fin(
+        estado.get("pais", "?"), estado.get("ofertas_encontradas", []), filas_finales,
+        resultado.get("duracion_seg") or 0, bool(resultado.get("detenido")), estado.get("errores", []),
+    )
+    error = enviar_correo_fin(destinatario, asunto, cuerpo, adjuntos=[(OUTPUT_CSV, csv_bytes)] if csv_bytes else None)
+    estado["correo"] = {"enviado": error is None, "error": error, "manual": True}
+    almacen.escribir_texto(status_file, json.dumps(estado, ensure_ascii=False))
+    return error
+
+
 def guardar_resultados(filas: list[dict], sitios_habilitados: set, almacen: Almacen | None = None) -> list[dict]:
     """Escribe filas en OUTPUT_CSV conservando las filas ya guardadas de
     sitios que no están en sitios_habilitados. Devuelve la lista completa
@@ -1680,6 +1732,7 @@ def main():
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
     parser.add_argument("--probar-correo", metavar="DESTINATARIO", help="Manda un correo de prueba con el SMTP configurado y termina, sin escanear nada (lo usa la herramienta de administración)")
+    parser.add_argument("--enviar-resultado", metavar="DESTINATARIO", help="Manda por correo el resultado del último escaneo terminado y termina, sin escanear nada (lo pide la GUI; con --inicio-ts se asegura de que sea el escaneo que se vio en pantalla)")
     parser.add_argument("--inicio-ts", type=float, help="Hora (epoch) en que la GUI lanzó este scan; el contador de tiempo parte de ahí y no del arranque del contenedor")
     parser.add_argument("--storage", help="Dónde viven keywords, estado, flag de detener y CSV de resultados: gs://bucket/prefijo para Cloud Storage. Si no se pasa, archivos en disco como siempre")
     args = parser.parse_args()
@@ -1700,6 +1753,16 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     en_la_nube = bool(args.storage)
+
+    if args.enviar_resultado:
+        error = reenviar_resultado(almacen, args.enviar_resultado, args.inicio_ts, args.status_file or "scan_status.json")
+        if error:
+            print(f"⚠ No se pudo enviar el resultado por correo: {error}", file=sys.stderr)
+            if args.inicio_ts is not None:
+                almacen.borrar(nombre_marca_correo(args.inicio_ts))  # no se envió: se puede volver a intentar
+            sys.exit(1)
+        print("Resultado enviado por correo.")
+        return
 
     if args.generar_prompt_keywords:
         generar_prompt_keywords(args.perfil)
