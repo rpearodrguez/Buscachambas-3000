@@ -156,6 +156,18 @@ MAX_OFERTAS_EN_CORREO = 100
 
 
 def cargar_config_email() -> dict | None:
+    """SMTP desde variables de entorno (así lo recibe el Cloud Run Job, con
+    la contraseña inyectada desde Secret Manager) o, si no están, desde
+    EMAIL_CONFIG_FILE (uso local)."""
+    host = os.environ.get("BUSCACHAMBAS_SMTP_HOST")
+    if host:
+        return {
+            "host": host,
+            "port": int(os.environ.get("BUSCACHAMBAS_SMTP_PORT", "587")),
+            "usuario": os.environ.get("BUSCACHAMBAS_SMTP_USER", ""),
+            "password": os.environ.get("BUSCACHAMBAS_SMTP_PASSWORD", ""),
+            "remitente": os.environ.get("BUSCACHAMBAS_SMTP_FROM", ""),
+        }
     if not os.path.exists(EMAIL_CONFIG_FILE):
         return None
     try:

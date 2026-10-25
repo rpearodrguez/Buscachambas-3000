@@ -1,0 +1,10 @@
+# Sin datos de infraestructura a propósito (el repo es público): región y
+# repositorio de imágenes se pasan al invocar.
+# Uso (desde la raíz del repo):
+#   gcloud builds submit --config cloud/scanner/cloudbuild.yaml \
+#     --substitutions=_REGION=<región>,_REPO=<repositorio-artifact-registry> .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "cloud/scanner/Dockerfile", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/scanner", "."]
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/scanner"

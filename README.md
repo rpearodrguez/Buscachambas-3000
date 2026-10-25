@@ -116,7 +116,7 @@ entorno o en los secrets de la plataforma):**
   ```
   Para verificarlo: `gcloud storage buckets describe gs://<bucket> --format="value(public_access_prevention,uniform_bucket_level_access)"`
   debe dar `enforced` y `True`. La cuenta de servicio necesita
-  `roles/storage.objectAdmin` sobre ese bucket y, para poder verificarlo,
+  `roles/storage.objectUser` sobre ese bucket y, para poder verificarlo,
   `roles/storage.legacyBucketReader`; nada más.
 - La carpeta de cada usuario sale de un hash de su correo, calculado en el
   servidor; el usuario nunca elige la ruta.
