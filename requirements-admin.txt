@@ -1,3 +1,4 @@
 google-cloud-storage
 google-cloud-run
 google-cloud-secret-manager
+google-cloud-bigquery

@@ -25,6 +25,9 @@ _FORMATOS = {
     "secret": re.compile(r"^[A-Za-z0-9_-]{1,255}$"),
 }
 
+# Opcional: tabla de la exportación de facturación a BigQuery (pestaña "Gastos").
+_FORMATO_TABLA_BILLING = re.compile(r"^[A-Za-z0-9-]{4,30}\.[A-Za-z0-9_]{1,1024}\.[A-Za-z0-9_]{1,1024}$")
+
 ENV_HOST = "BUSCACHAMBAS_SMTP_HOST"
 ENV_PORT = "BUSCACHAMBAS_SMTP_PORT"
 ENV_USER = "BUSCACHAMBAS_SMTP_USER"
@@ -44,6 +47,11 @@ def validar_config(cfg: dict) -> dict:
         if not _FORMATOS[campo].match(valor):
             raise ErrorAdmin(f"El campo '{campo}' falta o tiene un formato inválido.")
         limpio[campo] = valor
+    tabla = (cfg.get("billing_tabla") or "").strip()
+    if tabla:
+        if not _FORMATO_TABLA_BILLING.match(tabla):
+            raise ErrorAdmin("La tabla de facturación debe verse como proyecto.dataset.tabla.")
+        limpio["billing_tabla"] = tabla
     return limpio
 
 
@@ -158,3 +166,39 @@ def probar_correo(cfg: dict, destinatario: str, credenciales=None) -> tuple[bool
     if ejecucion.succeeded_count >= 1:
         return True, f"Correo de prueba enviado a {destinatario}."
     return False, "El job terminó con error: revisa los logs del job (Cloud Run → Jobs → Logs)."
+
+
+def consultar_gasto(cfg: dict, dias: int, credenciales=None) -> list[dict]:
+    """Costo diario por proyecto y servicio de los últimos `dias` días, desde
+    la exportación de facturación a BigQuery (bruto, y créditos aparte: el
+    free tier aparece como créditos negativos). Solo lectura. El nombre de la
+    tabla se valida con una lista blanca de caracteres antes de ir a la consulta;
+    el resto de los valores viajan como parámetros."""
+    tabla = cfg.get("billing_tabla")
+    if not tabla or not _FORMATO_TABLA_BILLING.match(tabla):
+        raise ErrorAdmin("Falta la tabla de la exportación de facturación (pestaña Conexión).")
+    dias = int(dias)
+    if not 1 <= dias <= 400:
+        raise ErrorAdmin("El período debe estar entre 1 y 400 días.")
+    from google.cloud import bigquery
+
+    cliente = bigquery.Client(project=cfg["project"], credentials=credenciales)
+    consulta = f"""
+        SELECT DATE(usage_start_time) AS dia,
+               IFNULL(project.id, '(cuenta)') AS proyecto,
+               service.description AS servicio,
+               currency AS moneda,
+               SUM(cost) AS bruto,
+               SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) AS c), 0)) AS creditos
+        FROM `{tabla}`
+        WHERE usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @dias DAY)
+        GROUP BY dia, proyecto, servicio, moneda
+        ORDER BY dia
+    """
+    trabajo = cliente.query(consulta, job_config=bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("dias", "INT64", dias)]))
+    return [
+        {"dia": r["dia"].isoformat(), "proyecto": r["proyecto"], "servicio": r["servicio"],
+         "moneda": r["moneda"], "bruto": float(r["bruto"] or 0), "creditos": float(r["creditos"] or 0)}
+        for r in trabajo.result()
+    ]

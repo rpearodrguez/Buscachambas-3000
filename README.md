@@ -166,6 +166,14 @@ streamlit run admin.py --server.address localhost
   ejecuta el job con `--probar-correo`, así se prueba el camino real.
 - **Usuarios:** lista de correos autorizados, con rol y cuota de scans por
   semana (1 por defecto). Vive en la parte `admin/` del bucket privado.
+- **Gastos:** gráfico del gasto diario por servicio (barras apiladas, bruto o
+  neto, por proyecto, con tabla de detalle). Lee la **exportación de
+  facturación a BigQuery**, que se activa una sola vez en la consola de
+  Facturación (*Billing export → BigQuery export → Standard usage cost*); el
+  nombre de la tabla `gcp_billing_export_v1_…` se pega en la pestaña Conexión.
+  La exportación solo reúne datos desde que se activa y tarda horas en
+  llenarse. El neto es lo que realmente se paga: el free tier aparece como
+  créditos que descuentan el uso. Lógica en `gasto.py`, gráfico en `gasto_grafico.py`.
 
 ## Uso (línea de comandos)
 
