@@ -1675,9 +1675,21 @@ def main():
     parser.add_argument("--email-a", help=f"Si se pasa, manda un correo a esta dirección al terminar (credenciales SMTP en {EMAIL_CONFIG_FILE})")
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
+    parser.add_argument("--probar-correo", metavar="DESTINATARIO", help="Manda un correo de prueba con el SMTP configurado y termina, sin escanear nada (lo usa la herramienta de administración)")
     parser.add_argument("--inicio-ts", type=float, help="Hora (epoch) en que la GUI lanzó este scan; el contador de tiempo parte de ahí y no del arranque del contenedor")
     parser.add_argument("--storage", help="Dónde viven keywords, estado, flag de detener y CSV de resultados: gs://bucket/prefijo para Cloud Storage. Si no se pasa, archivos en disco como siempre")
     args = parser.parse_args()
+    if args.probar_correo:
+        error = enviar_correo_fin(
+            args.probar_correo, "Job Scanner — correo de prueba",
+            "Si lees esto, el aviso por correo del Job Scanner está bien configurado.",
+        )
+        if error:
+            print(f"⚠ No se pudo enviar el correo de prueba: {error}", file=sys.stderr)
+            sys.exit(1)
+        print("Correo de prueba enviado.")
+        return
+
     try:
         almacen = crear_almacen(args.storage)
     except ErrorAlmacen as e:

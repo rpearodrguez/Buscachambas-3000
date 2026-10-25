@@ -125,6 +125,28 @@ entorno o en los secrets de la plataforma):**
 - Credenciales (`email_config.json`, llaves de cuentas de servicio,
   `.streamlit/secrets.toml`, `.env`) están en `.gitignore` y `.gcloudignore`.
 
+### Administración (solo en tu PC)
+
+`admin.py` es una herramienta local para administrar la versión en la nube
+sin escribir comandos: datos de conexión, correo SMTP y usuarios autorizados.
+Corre con **tus** credenciales de Google, no con las de la GUI pública, que
+no tiene ningún permiso para cambiar esta configuración.
+
+```
+pip install -r requirements-admin.txt
+gcloud auth application-default login      # una vez, con tu cuenta de Google
+streamlit run admin.py --server.address localhost
+```
+
+- **Conexión:** proyecto, región, job, bucket y nombre del secreto. Se guardan
+  en `admin_local.json` (en `.gitignore`; el repo es público).
+- **Correo (SMTP):** servidor, puerto y usuario se escriben en las variables
+  del job; el token va a Secret Manager sin mostrarse y no se puede volver a
+  leer (se conservan la versión nueva y la anterior). "Guardar y probar"
+  ejecuta el job con `--probar-correo`, así se prueba el camino real.
+- **Usuarios:** lista de correos autorizados, con rol y cuota de scans por
+  semana (1 por defecto). Vive en la parte `admin/` del bucket privado.
+
 ## Uso (línea de comandos)
 
 ```bash

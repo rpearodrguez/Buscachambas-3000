@@ -20,3 +20,4 @@ email_config.json
 *.key
 .env
 .env.*
+admin_local.json
