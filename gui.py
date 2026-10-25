@@ -32,6 +32,7 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
+import almacen as almacenamiento
 import scan_getonbrd as scanner
 import extraer_oferta as extractor
 
@@ -40,13 +41,34 @@ DETENER_FILE = "detener.flag"
 KEYWORDS_GUI_FILE = "keywords_gui_actual.txt"
 SCAN_LOG_FILE = "scan_stdout.log"
 
+# Dónde viven los archivos compartidos con el scan (estado, flag de detener,
+# CSV, keywords). Sin la variable de entorno, archivos en disco como siempre;
+# con BUSCACHAMBAS_STORAGE=gs://bucket, en la carpeta de este usuario del
+# bucket. USUARIO_LOCAL es un reemplazo hasta que haya login por usuario.
+USUARIO_LOCAL = "local"
+STORAGE_BASE = os.environ.get("BUSCACHAMBAS_STORAGE")
+STORAGE_DESTINO = almacenamiento.destino_de_usuario(STORAGE_BASE, USUARIO_LOCAL)
+
 st.set_page_config(page_title="Job Scanner", layout="wide")
 st.title("Job Scanner")
 
 
+# Cacheado: crear el almacén de un bucket verifica que sea privado (una
+# consulta a la API), y esta página se re-ejecuta entera cada segundo
+# mientras corre un scan.
+@st.cache_resource
+def _crear_almacen(destino):
+    return almacenamiento.crear_almacen(destino)
+
+
+try:
+    almacen = _crear_almacen(STORAGE_DESTINO)
+except almacenamiento.ErrorAlmacen as e:
+    st.error(str(e))
+    st.stop()
+
+
 def leer_estado_scan() -> dict | None:
-    if not os.path.exists(STATUS_FILE):
-        return None
     # El scan reescribe este archivo en cada request (más seguido todavía
     # en la fase oferta por oferta), así que una lectura acá puede chocar
     # con el rename atómico del lado del scanner — sin reintentar, esa
@@ -54,8 +76,8 @@ def leer_estado_scan() -> dict | None:
     # para siempre (queda "corriendo" en falso aunque el scan siga vivo).
     for intento in range(5):
         try:
-            with open(STATUS_FILE, encoding="utf-8") as f:
-                return json.load(f)
+            texto = almacen.leer_texto(STATUS_FILE)
+            return None if texto is None else json.loads(texto)
         except (json.JSONDecodeError, OSError):
             if intento == 4:
                 return None
@@ -79,10 +101,8 @@ def proceso_sigue_vivo(pid: int) -> bool:
 
 
 def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa, email_a=None):
-    with open(KEYWORDS_GUI_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(keywords) + "\n")
-    if os.path.exists(DETENER_FILE):
-        os.remove(DETENER_FILE)
+    almacen.escribir_texto(KEYWORDS_GUI_FILE, "\n".join(keywords) + "\n")
+    almacen.borrar(DETENER_FILE)
 
     cmd = [
         sys.executable, "scan_getonbrd.py",
@@ -98,6 +118,8 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         cmd.append("--descripcion-completa")
     if email_a:
         cmd += ["--email-a", email_a]
+    if STORAGE_DESTINO:
+        cmd += ["--storage", STORAGE_DESTINO]
 
     # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
     # excepción no manejada, scan_status.json queda con "corriendo": true
@@ -208,14 +230,13 @@ with st.sidebar.expander("Aviso por correo"):
         getattr(st, tipo)(texto)
 
 with st.sidebar.expander("Keywords", expanded=True):
-    keywords_default = "\n".join(scanner.cargar_keywords())
+    keywords_default = "\n".join(scanner.cargar_keywords(almacen=almacen))
     keywords_text = st.text_area("Una por línea", value=keywords_default, height=180)
     keywords = [k.strip() for k in keywords_text.splitlines() if k.strip()]
 
     if st.button("Guardar keywords en keywords.txt"):
-        with open(scanner.KEYWORDS_FILE_DEFAULT, "w", encoding="utf-8") as f:
-            f.write("\n".join(keywords) + "\n")
-        st.success(f"Guardado en {scanner.KEYWORDS_FILE_DEFAULT}")
+        almacen.escribir_texto(scanner.KEYWORDS_FILE_DEFAULT, "\n".join(keywords) + "\n")
+        st.success(f"Guardado en {almacen.descripcion(scanner.KEYWORDS_FILE_DEFAULT)}")
 
 
 with st.sidebar.expander("Generar keywords con Claude"):
@@ -292,8 +313,7 @@ if click_buscar or click_buscar_completa:
         st.rerun()
 
 if click_detener:
-    with open(DETENER_FILE, "w") as f:
-        f.write("")
+    almacen.escribir(DETENER_FILE, b"")
     st.warning("Deteniendo... termina la request en curso y corta ahí.")
 
 if proceso_muerto:
@@ -307,6 +327,10 @@ if proceso_muerto:
     if os.path.exists(SCAN_LOG_FILE):
         with open(SCAN_LOG_FILE, encoding="utf-8", errors="replace") as f:
             contenido_log = f.read()
+        # Este log llega a la pantalla del usuario: sin nombres del bucket.
+        if STORAGE_BASE and STORAGE_BASE.startswith("gs://"):
+            nombre_bucket = STORAGE_BASE[len("gs://"):].split("/")[0]
+            contenido_log = contenido_log.replace(nombre_bucket, "<bucket>")
         with st.expander("Ver log del proceso (stdout/stderr)", expanded=True):
             st.code(contenido_log[-8000:] or "(log vacío)", language="text")
     else:
@@ -375,8 +399,9 @@ elif estado_previo and estado_previo.get("resultado"):
 # Tabla de resultados
 # ---------------------------------------------------------------------------
 
-if os.path.exists(scanner.OUTPUT_CSV):
-    df = pd.read_csv(scanner.OUTPUT_CSV)
+csv_guardado = almacen.leer(scanner.OUTPUT_CSV)
+if csv_guardado is not None:
+    df = pd.read_csv(io.BytesIO(csv_guardado))
 
     col_titulo, col_limpiar = st.columns([4, 1])
     with col_titulo:
@@ -390,7 +415,7 @@ if os.path.exists(scanner.OUTPUT_CSV):
         col_si, col_no = st.columns(2)
         with col_si:
             if st.button("Sí, borrar todo", type="primary"):
-                os.remove(scanner.OUTPUT_CSV)
+                almacen.borrar(scanner.OUTPUT_CSV)
                 st.session_state.confirmar_limpiar = False
                 st.rerun()
         with col_no:

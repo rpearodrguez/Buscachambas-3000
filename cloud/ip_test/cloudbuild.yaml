@@ -1,7 +1,10 @@
+# Sin datos de infraestructura a propósito (el repo es público): región y
+# repositorio de imágenes se pasan al invocar, no se guardan acá.
 # Uso (desde la raíz del repo):
-#   gcloud builds submit --config cloud/ip_test/cloudbuild.yaml .
+#   gcloud builds submit --config cloud/ip_test/cloudbuild.yaml \
+#     --substitutions=_REGION=<región>,_REPO=<repositorio-artifact-registry> .
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-f", "cloud/ip_test/Dockerfile", "-t", "us-central1-docker.pkg.dev/$PROJECT_ID/buscachambas/ip-test", "."]
+    args: ["build", "-f", "cloud/ip_test/Dockerfile", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ip-test", "."]
 images:
-  - us-central1-docker.pkg.dev/$PROJECT_ID/buscachambas/ip-test
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ip-test"

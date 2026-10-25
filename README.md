@@ -94,6 +94,37 @@ con el botón, también avisa. Si el envío falla, el scan igual queda
 guardado y la GUI muestra el error. Si el proceso crashea, no se manda
 correo.
 
+### Almacenamiento en la nube (opcional)
+
+Por defecto el estado del scan, el flag de detener, las keywords y el CSV
+son archivos en esta carpeta. Para correr el scan y la GUI en máquinas
+distintas, esos archivos pueden vivir en un bucket de Cloud Storage con una
+carpeta por usuario: `python scan_getonbrd.py --storage gs://<bucket>/<carpeta>`
+y, para la GUI, la variable de entorno `BUSCACHAMBAS_STORAGE=gs://<bucket>`
+(requiere `pip install -r requirements-cloud.txt`). El código vive en
+`almacen.py`.
+
+**Seguridad (el repo es público: nada de esto va aquí, solo en variables de
+entorno o en los secrets de la plataforma):**
+- El bucket tiene que ser privado, y el código lo exige: antes de usarlo
+  verifica que tenga la *prevención de acceso público* en `enforced` y el
+  *acceso uniforme a nivel de bucket*; si no es así, o no puede verificarlo,
+  se niega a usarlo.
+  ```
+  gcloud storage buckets create gs://<bucket> --location=<región> \
+    --uniform-bucket-level-access --public-access-prevention
+  ```
+  Para verificarlo: `gcloud storage buckets describe gs://<bucket> --format="value(public_access_prevention,uniform_bucket_level_access)"`
+  debe dar `enforced` y `True`. La cuenta de servicio necesita
+  `roles/storage.objectAdmin` sobre ese bucket y, para poder verificarlo,
+  `roles/storage.legacyBucketReader`; nada más.
+- La carpeta de cada usuario sale de un hash de su correo, calculado en el
+  servidor; el usuario nunca elige la ruta.
+- Los mensajes de error y los logs que ve el usuario no incluyen nombres de
+  bucket, rutas ni detalles de la infraestructura (van solo al log del servidor).
+- Credenciales (`email_config.json`, llaves de cuentas de servicio,
+  `.streamlit/secrets.toml`, `.env`) están en `.gitignore` y `.gcloudignore`.
+
 ## Uso (línea de comandos)
 
 ```bash

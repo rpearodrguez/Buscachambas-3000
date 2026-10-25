@@ -12,3 +12,9 @@ __pycache__/
 *.flag
 *.txt
 !requirements.txt
+.streamlit/
+*.pem
+*.key
+.env
+.env.*
+!requirements-cloud.txt

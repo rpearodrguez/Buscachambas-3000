@@ -71,6 +71,7 @@ import json
 import re
 import argparse
 import html
+import io
 import smtplib
 import unicodedata
 from datetime import datetime
@@ -80,6 +81,7 @@ from urllib.parse import urljoin, urlparse, quote
 import requests
 from bs4 import BeautifulSoup
 
+from almacen import Almacen, AlmacenLocal, ErrorAlmacen, crear_almacen
 from extraer_oferta import EXTRACTORES as _EXTRACTORES_DETALLE
 from extraer_oferta import extraer_id_trabajando, extraer_trabajando
 
@@ -117,6 +119,12 @@ HEADERS = {
 
 REQUEST_DELAY_SECONDS = 1.5  # delay entre requests, para no saturar los sitios
 OUTPUT_CSV = "ofertas_empleos.csv"
+
+# Con --storage gs://..., cada subida del estado es una escritura al bucket
+# (5.000 gratis al mes en total, y un scan completo da ~1.600 pasos), y cada
+# chequeo del flag de detener una lectura. Se espacian; ver EscritorEstado.
+INTERVALO_GUARDADO_NUBE = 10
+INTERVALO_DETENER_NUBE = 3
 CSV_FIELDS = ["sitio", "titulo", "empresa", "keywords_match", "remota", "activa", "motivo", "link", "fecha_creacion", "salario", "descripcion"]
 # Nota: "salario" y "descripcion" quedan vacíos para los sitios que no los
 # expongan — csv.DictWriter completa con "" los campos que falten en una
@@ -166,11 +174,11 @@ def config_email_completa(config: dict | None) -> bool:
     return bool(config) and all(config.get(k) for k in ("host", "port", "usuario", "password", "destinatario"))
 
 
-def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str, adjuntos: list[str] | None = None) -> str | None:
-    """Manda el aviso de fin de scan, con los archivos de `adjuntos` (los
-    que existan). Devuelve None si salió bien, o el mensaje de error —
-    nunca lanza: un correo que falla no debe tumbar un scan que ya terminó
-    y guardó sus resultados."""
+def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str, adjuntos: list[tuple[str, bytes]] | None = None) -> str | None:
+    """Manda el aviso de fin de scan, con `adjuntos` como pares (nombre de
+    archivo, contenido). Devuelve None si salió bien, o el mensaje de error
+    — nunca lanza: un correo que falla no debe tumbar un scan que ya
+    terminó y guardó sus resultados."""
     config = cargar_config_email()
     if not config:
         return f"no hay {EMAIL_CONFIG_FILE} (o está mal formado) — copia email_config.example.json y complétalo"
@@ -181,16 +189,12 @@ def enviar_correo_fin(destinatario: str, asunto: str, cuerpo: str, adjuntos: lis
         msg["To"] = destinatario
         msg.set_content(cuerpo)
 
-        for ruta in adjuntos or []:
-            if not os.path.exists(ruta):
-                continue
-            with open(ruta, "rb") as f:
-                datos = f.read()
+        for nombre_archivo, datos in adjuntos or []:
+            es_csv = nombre_archivo.lower().endswith(".csv")
             # BOM para que Excel abra el CSV en UTF-8 y no rompa las tildes.
-            if ruta.lower().endswith(".csv") and not datos.startswith(b"\xef\xbb\xbf"):
+            if es_csv and not datos.startswith(b"\xef\xbb\xbf"):
                 datos = b"\xef\xbb\xbf" + datos
-            msg.add_attachment(datos, maintype="text", subtype="csv" if ruta.lower().endswith(".csv") else "plain",
-                               filename=os.path.basename(ruta))
+            msg.add_attachment(datos, maintype="text", subtype="csv" if es_csv else "plain", filename=nombre_archivo)
 
         puerto = int(config.get("port", 587))
         if puerto == 465:
@@ -299,12 +303,12 @@ def _completar_descripciones(aceptadas: dict, on_progreso, debe_detener):
         yield
 
 
-def cargar_keywords(path: str = KEYWORDS_FILE_DEFAULT) -> list[str]:
+def cargar_keywords(path: str = KEYWORDS_FILE_DEFAULT, almacen: Almacen | None = None) -> list[str]:
     """Lee keywords desde un archivo (una por línea, '#' comenta la línea).
     Si no existe o queda vacío, usa DEFAULT_KEYWORDS."""
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            kws = [linea.strip() for linea in f if linea.strip() and not linea.strip().startswith("#")]
+    texto = (almacen or AlmacenLocal()).leer_texto(path)
+    if texto is not None:
+        kws = [linea.strip() for linea in texto.splitlines() if linea.strip() and not linea.strip().startswith("#")]
         if kws:
             return kws
     return DEFAULT_KEYWORDS
@@ -1472,14 +1476,27 @@ class EscritorEstado:
     # durante todo el scan (un append por cada request, en los ~700+ pasos
     # de GetOnBrd por ejemplo) y cada escritura reescribe el archivo entero.
 
-    def __init__(self, status_file: str, detener_file: str | None, pais: str, sitios: list[str]):
+    def __init__(self, almacen: Almacen, status_file: str, detener_file: str | None, pais: str, sitios: list[str],
+                 min_intervalo_guardado: float = 0, intervalo_detener: float = 0):
+        """min_intervalo_guardado: segundos mínimos entre subidas del
+        estado (0 = en cada paso, como en disco local). En un bucket cada
+        subida es una operación de escritura con cuota gratis limitada, así
+        que ahí se espacia (los guardados finales siempre se fuerzan).
+        intervalo_detener: cuánto se recuerda el último chequeo del flag de
+        detener, por la misma razón (una lectura al bucket por paso)."""
+        self.almacen = almacen
         self.status_file = status_file
         self.detener_file = detener_file
+        self.min_intervalo_guardado = min_intervalo_guardado
+        self.intervalo_detener = intervalo_detener
+        self._ultimo_guardado = 0.0
+        self._ultimo_chequeo_detener = (0.0, False)
         self.inicio = time.time()
         self.estado = {
             "corriendo": True,
             "pid": os.getpid(),
             "inicio_ts": self.inicio,
+            "actualizado_ts": self.inicio,
             "pais": pais,
             "sitios": sitios,
             "progreso": {"sitio": "", "etiqueta": "", "i": 0, "total": 0},
@@ -1490,28 +1507,21 @@ class EscritorEstado:
             "ofertas_encontradas": [],
             "resultado": None,
         }
-        self._guardar()
+        self._guardar(forzar=True)
 
-    def _guardar(self):
-        tmp = f"{self.status_file}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.estado, f, ensure_ascii=False)
-
-        # En Windows, os.replace() puede tirar PermissionError si algo más
-        # (la GUI, típicamente) tiene el archivo destino abierto para
-        # lectura justo en ese instante — es una condición de carrera
-        # transitoria, no un error real. Reintentar con backoff corto en
-        # vez de dejar que tumbe el scan entero por una sola escritura de
-        # progreso que se puede reintentar sin problema.
-        for intento in range(5):
-            try:
-                os.replace(tmp, self.status_file)
-                return
-            except PermissionError:
-                if intento == 4:
-                    print(f"    ⚠ no se pudo actualizar {self.status_file} (archivo bloqueado, se sigue igual)", file=sys.stderr)
-                    return
-                time.sleep(0.05 * (intento + 1))
+    def _guardar(self, forzar: bool = False):
+        ahora = time.time()
+        if not forzar and ahora - self._ultimo_guardado < self.min_intervalo_guardado:
+            return
+        self.estado["actualizado_ts"] = ahora
+        try:
+            self.almacen.escribir_texto(self.status_file, json.dumps(self.estado, ensure_ascii=False))
+            self._ultimo_guardado = ahora
+        except Exception as e:
+            # Una escritura de progreso que falla (archivo bloqueado por la
+            # GUI en Windows, un corte de red hacia el bucket) no debe
+            # tumbar un scan de 40 minutos: se reintenta en el próximo paso.
+            print(f"    ⚠ no se pudo actualizar {self.almacen.descripcion(self.status_file)} ({type(e).__name__}), se sigue igual", file=sys.stderr)
 
     def _log(self, linea: str):
         self.estado["log"].append(linea)
@@ -1547,7 +1557,18 @@ class EscritorEstado:
         self._guardar()
 
     def debe_detener(self) -> bool:
-        return bool(self.detener_file and os.path.exists(self.detener_file))
+        if not self.detener_file:
+            return False
+        ahora = time.time()
+        ultimo_ts, ultimo_valor = self._ultimo_chequeo_detener
+        if ultimo_valor or ahora - ultimo_ts < self.intervalo_detener:
+            return ultimo_valor
+        try:
+            valor = self.almacen.existe(self.detener_file)
+        except Exception:
+            valor = False  # sin poder leer el flag, no cortar el scan por las dudas
+        self._ultimo_chequeo_detener = (ahora, valor)
+        return valor
 
     def finalizar(self, filas: list[dict], filas_finales: list[dict]):
         self.estado["corriendo"] = False
@@ -1558,16 +1579,16 @@ class EscritorEstado:
             "detenido": self.debe_detener(),
             "duracion_seg": time.time() - self.inicio,
         }
-        self._guardar()
-        if self.detener_file and os.path.exists(self.detener_file):
-            os.remove(self.detener_file)
+        self._guardar(forzar=True)
+        if self.detener_file:
+            self.almacen.borrar(self.detener_file)
 
     def registrar_correo(self, error: str | None):
         self.estado["correo"] = {"enviado": error is None, "error": error}
-        self._guardar()
+        self._guardar(forzar=True)
 
 
-def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]:
+def guardar_resultados(filas: list[dict], sitios_habilitados: set, almacen: Almacen | None = None) -> list[dict]:
     """Escribe filas en OUTPUT_CSV conservando las filas ya guardadas de
     sitios que no están en sitios_habilitados. Devuelve la lista completa
     final (previas + nuevas).
@@ -1577,11 +1598,12 @@ def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]
     escaneo), se mantiene su primera fecha vista en vez de pisarla con la
     de hoy — así se puede saber hace cuánto está esa oferta, no solo
     cuándo se vio por última vez."""
+    almacen = almacen or AlmacenLocal()
     filas_previas = []
     fecha_por_link = {}
-    if os.path.exists(OUTPUT_CSV):
-        with open(OUTPUT_CSV, newline="", encoding="utf-8") as f:
-            todas_previas = list(csv.DictReader(f))
+    texto_previo = almacen.leer_texto(OUTPUT_CSV)
+    if texto_previo is not None:
+        todas_previas = list(csv.DictReader(io.StringIO(texto_previo, newline="")))
         filas_previas = [r for r in todas_previas if r["sitio"] not in sitios_habilitados]
         fecha_por_link = {r["link"]: r["fecha_creacion"] for r in todas_previas if r.get("fecha_creacion")}
 
@@ -1591,10 +1613,11 @@ def guardar_resultados(filas: list[dict], sitios_habilitados: set) -> list[dict]
 
     filas_finales = filas_previas + filas
 
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        writer.writeheader()
-        writer.writerows(filas_finales)
+    salida = io.StringIO(newline="")
+    writer = csv.DictWriter(salida, fieldnames=CSV_FIELDS)
+    writer.writeheader()
+    writer.writerows(filas_finales)
+    almacen.escribir_texto(OUTPUT_CSV, salida.getvalue())
 
     return filas_finales
 
@@ -1617,7 +1640,14 @@ def main():
     parser.add_argument("--email-a", help=f"Si se pasa, manda un correo a esta dirección al terminar (credenciales SMTP en {EMAIL_CONFIG_FILE})")
     parser.add_argument("--status-file", help="Si se pasa, escribe el progreso en vivo a este JSON (lo usa la GUI para leer el estado desde otro proceso)")
     parser.add_argument("--detener-file", help="Si este archivo existe durante el scan, se corta apenas se detecta (requiere --status-file)")
+    parser.add_argument("--storage", help="Dónde viven keywords, estado, flag de detener y CSV de resultados: gs://bucket/prefijo para Cloud Storage. Si no se pasa, archivos en disco como siempre")
     args = parser.parse_args()
+    try:
+        almacen = crear_almacen(args.storage)
+    except ErrorAlmacen as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    en_la_nube = bool(args.storage)
 
     if args.generar_prompt_keywords:
         generar_prompt_keywords(args.perfil)
@@ -1636,7 +1666,7 @@ def main():
             sys.exit(1)
         ids_sitios = [i for i in ids_sitios if i in pedidos]
 
-    keywords = cargar_keywords(args.keywords_file)
+    keywords = cargar_keywords(args.keywords_file, almacen)
     require_remote = not args.incluir_no_remotas
 
     inicio = time.time()
@@ -1644,7 +1674,13 @@ def main():
     print(f"Keywords ({len(keywords)}): {', '.join(keywords)}")
 
     nombres_sitios = [SITIOS_POR_ID[i]["nombre"] for i in ids_sitios]
-    escritor = EscritorEstado(args.status_file, args.detener_file, args.pais, nombres_sitios) if args.status_file else None
+    escritor = None
+    if args.status_file:
+        escritor = EscritorEstado(
+            almacen, args.status_file, args.detener_file, args.pais, nombres_sitios,
+            min_intervalo_guardado=INTERVALO_GUARDADO_NUBE if en_la_nube else 0,
+            intervalo_detener=INTERVALO_DETENER_NUBE if en_la_nube else 0,
+        )
 
     def _log_progreso(nombre_sitio):
         print(f"[{datetime.now():%H:%M:%S}] {nombre_sitio}...")
@@ -1664,7 +1700,7 @@ def main():
     for i, f in enumerate(filas, 1):
         print(f"  [{i}/{len(filas)}] [{f['sitio']}] {f['titulo'][:60]} — {f['motivo']}")
 
-    filas_finales = guardar_resultados(filas, sitios_habilitados)
+    filas_finales = guardar_resultados(filas, sitios_habilitados, almacen)
 
     if escritor:
         escritor.finalizar(filas, filas_finales)
@@ -1672,13 +1708,14 @@ def main():
     duracion = time.time() - inicio
     activas = [f for f in filas_finales if f["activa"] == "SI"]
     print(f"\n[{datetime.now():%H:%M:%S}] Listo en {formatear_duracion(duracion)}. {len(activas)}/{len(filas_finales)} ofertas activas y relevantes en total ({len(filas)} nuevas de este escaneo).")
-    print(f"Resultado guardado en: {OUTPUT_CSV}")
+    print(f"Resultado guardado en: {almacen.descripcion(OUTPUT_CSV)}")
 
     if args.email_a:
         detenido = escritor.estado["resultado"]["detenido"] if escritor else False
         errores = escritor.estado["errores"] if escritor else []
         asunto, cuerpo = armar_correo_fin(args.pais, filas, filas_finales, duracion, detenido, errores)
-        error_correo = enviar_correo_fin(args.email_a, asunto, cuerpo, adjuntos=[OUTPUT_CSV])
+        csv_final = almacen.leer(OUTPUT_CSV)
+        error_correo = enviar_correo_fin(args.email_a, asunto, cuerpo, adjuntos=[(OUTPUT_CSV, csv_final)] if csv_final else None)
         if error_correo:
             print(f"⚠ No se pudo enviar el correo a {args.email_a}: {error_correo}", file=sys.stderr)
         else:

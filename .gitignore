@@ -12,3 +12,11 @@ perfil.txt
 *.log
 *.lnk
 email_config.json
+# Credenciales e infraestructura: nunca al repo (es público)
+.streamlit/secrets.toml
+*service-account*.json
+*-sa-key*.json
+*.pem
+*.key
+.env
+.env.*
