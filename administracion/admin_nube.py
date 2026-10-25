@@ -200,31 +200,61 @@ def consultar_gasto(cfg: dict, dias: int, credenciales=None) -> list[dict]:
         SELECT DATE(usage_start_time) AS dia,
                IFNULL(project.id, '(cuenta)') AS proyecto,
                service.description AS servicio,
+               IFNULL(sku.description, '(sin SKU)') AS sku,
+               IFNULL(location.region, IFNULL(location.location, '-')) AS ubicacion,
                currency AS moneda,
                SUM(cost) AS bruto,
                SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) AS c), 0)) AS creditos
         FROM `{tabla}`
         WHERE usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @dias DAY)
-        GROUP BY dia, proyecto, servicio, moneda
+        GROUP BY dia, proyecto, servicio, sku, ubicacion, moneda
+        HAVING ABS(bruto) > 0.000001 OR ABS(creditos) > 0.000001
         ORDER BY dia
     """
     trabajo = cliente.query(consulta, job_config=bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("dias", "INT64", dias)]))
     return [
         {"dia": r["dia"].isoformat(), "proyecto": r["proyecto"], "servicio": r["servicio"],
-         "moneda": r["moneda"], "bruto": float(r["bruto"] or 0), "creditos": float(r["creditos"] or 0)}
+         "sku": r["sku"], "ubicacion": r["ubicacion"], "moneda": r["moneda"], "bruto": float(r["bruto"] or 0), "creditos": float(r["creditos"] or 0)}
         for r in trabajo.result()
     ]
 
 
-def ultimo_dia_con_datos(cfg: dict, credenciales=None) -> str | None:
-    """Fecha ISO (UTC) del dato más reciente de la exportación de facturación, o None si la tabla está
-    vacía. Sirve para explicar un período sin datos: la exportación va por detrás de la realidad."""
-    tabla = cfg.get("billing_tabla")
-    if not tabla or not _FORMATO_TABLA_BILLING.match(tabla):
-        raise ErrorAdmin("Falta la tabla de la exportación de facturación (pestaña Conexión).")
-    from google.cloud import bigquery
+# --- limpieza automática del bucket (regla de ciclo de vida, la ejecuta Google solo) ---
+# Solo para lo efímero: los candados y banderas que a veces quedan colgados. Los datos de los usuarios NUNCA van
+# en una regla automática: una regla por "edad" borraría, por ejemplo, unas keywords guardadas hace un año de
+# alguien que usa la herramienta todas las semanas. Esa limpieza es manual y con vista previa (pestaña Limpieza).
+SUFIJOS_TEMPORALES = ["/lanzando.lock", "/detener.flag"]
+DIAS_TEMPORALES = 1
 
-    cliente = bigquery.Client(project=cfg["project"], credentials=credenciales)
-    fila = list(cliente.query(f"SELECT MAX(DATE(usage_start_time)) AS ultimo FROM `{tabla}`").result())[0]
-    return fila["ultimo"].isoformat() if fila["ultimo"] else None
+
+def _bucket(cfg: dict, credenciales=None, cliente=None):
+    if cliente is None:
+        from google.cloud import storage
+
+        cliente = storage.Client(project=cfg["project"], credentials=credenciales)
+    return cliente.get_bucket(cfg["bucket"])
+
+
+def _es_regla_de_temporales(regla) -> bool:
+    condicion = regla.get("condition", {})
+    return (
+        regla.get("action", {}).get("type") == "Delete"
+        and condicion.get("age") == DIAS_TEMPORALES
+        and sorted(condicion.get("matchesSuffix", [])) == sorted(SUFIJOS_TEMPORALES)
+    )
+
+
+def regla_de_temporales_activa(cfg: dict, credenciales=None, cliente=None) -> bool:
+    """¿Ya está la regla que borra sola los candados y banderas con más de un día?"""
+    return any(_es_regla_de_temporales(r) for r in _bucket(cfg, credenciales, cliente).lifecycle_rules)
+
+
+def activar_regla_de_temporales(cfg: dict, credenciales=None, cliente=None) -> bool:
+    """Agrega esa regla al bucket sin tocar las demás. True si la agregó, False si ya estaba (idempotente)."""
+    bucket = _bucket(cfg, credenciales, cliente)
+    if any(_es_regla_de_temporales(r) for r in bucket.lifecycle_rules):
+        return False
+    bucket.add_lifecycle_delete_rule(age=DIAS_TEMPORALES, matches_suffix=SUFIJOS_TEMPORALES)
+    bucket.patch()
+    return True

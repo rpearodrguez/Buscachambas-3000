@@ -105,7 +105,7 @@ def serie_diaria(filas: list[dict], medida: str) -> list[dict]:
             continue
         acumulado[(str(f["dia"])[:10], nombre_de_serie(f["servicio"]))] += monto(f, medida)
     return [
-        {"dia": d, "etiqueta": etiqueta_de_dia(d), "servicio": s, "orden": orden_de_serie(s), "monto": round(v, 6)}
+        {"dia": d, "periodo": d, "etiqueta": etiqueta_de_dia(d), "servicio": s, "orden": orden_de_serie(s), "monto": round(v, 6)}
         for (d, s), v in sorted(acumulado.items())
     ]
 
@@ -160,3 +160,210 @@ def formatear(valor: float, moneda: str = "USD") -> str:
     """Montos chicos (centavos) con 4 decimales para que no se vean como 0.00."""
     signo = "-" if valor < 0 else ""
     return f"{signo}{abs(valor):,.4f} {moneda}"
+
+
+# --------------------------------------------------------------------------- vista "últimos días"
+
+def _rango_de_dias(dias: int, hasta, retroceso: int = 0) -> tuple[str, str]:
+    """(primer día, último día) ISO de una ventana de `dias` días que termina en `hasta` menos `retroceso` días."""
+    from datetime import timedelta
+
+    fin = hasta - timedelta(days=retroceso)
+    return (fin - timedelta(days=dias - 1)).isoformat(), fin.isoformat()
+
+
+def recortar_dias(filas: list[dict], dias: int, hasta, retroceso: int = 0) -> list[dict]:
+    """Solo las filas de los últimos `dias` días terminando en `hasta` (un date); con `retroceso`, la
+    misma ventana corrida esos días hacia atrás (retroceso=dias da el período anterior)."""
+    desde, fin = _rango_de_dias(dias, hasta, retroceso)
+    return [f for f in filas if desde <= str(f["dia"])[:10] <= fin]
+
+
+def comparar_periodos(filas: list[dict], dias: int, hasta) -> dict:
+    """Totales de los últimos `dias` días contra los `dias` anteriores (misma duración), para ver
+    si el gasto crece o baja. `anterior_tiene_datos` evita comparar contra un período vacío."""
+    desde_a, hasta_a = _rango_de_dias(dias, hasta)
+    desde_p, hasta_p = _rango_de_dias(dias, hasta, retroceso=dias)
+    actual = [f for f in filas if desde_a <= str(f["dia"])[:10] <= hasta_a]
+    previo = [f for f in filas if desde_p <= str(f["dia"])[:10] <= hasta_p]
+    return {
+        "actual": totales(actual), "anterior": totales(previo),
+        "actual_tiene_datos": bool(actual), "anterior_tiene_datos": bool(previo),
+        "anterior_desde": desde_p, "anterior_hasta": hasta_p,
+    }
+
+
+def variacion(actual: float, anterior: float) -> float | None:
+    """Cambio relativo (0.25 = +25 %), o None si no hay base para comparar."""
+    if not anterior:
+        return None
+    return (actual - anterior) / abs(anterior)
+
+
+def texto_variacion(actual: float, anterior: float, moneda: str = "USD") -> str | None:
+    """"+0.0100 USD (+12 %)" para el delta de una tarjeta; None si no hay base para comparar."""
+    v = variacion(actual, anterior)
+    if v is None:
+        return None
+    diferencia = actual - anterior
+    signo = "+" if diferencia >= 0 else "-"
+    return f"{signo}{abs(diferencia):,.4f} {moneda} ({v * 100:+.0f} %)"
+
+
+# --------------------------------------------------------------------------- vista "por mes"
+
+def mes_de(dia: str) -> str:
+    return str(dia)[:7]
+
+
+def etiqueta_de_mes(mes: str) -> str:
+    """"2026-09" -> "sep 2026" (texto ya formateado, por la misma razón que las etiquetas de día)."""
+    anio, m = mes.split("-")
+    return f"{MESES[int(m) - 1]} {anio}"
+
+
+def meses_del_periodo(cantidad: int, hasta) -> list[str]:
+    """Los últimos `cantidad` meses ("YYYY-MM", en orden) terminando en el mes de `hasta`."""
+    anio, mes = hasta.year, hasta.month
+    meses = []
+    for _ in range(cantidad):
+        meses.append(f"{anio:04d}-{mes:02d}")
+        mes -= 1
+        if mes == 0:
+            anio, mes = anio - 1, 12
+    return meses[::-1]
+
+
+def mes_anterior(mes: str) -> str:
+    anio, m = int(mes[:4]), int(mes[5:7])
+    return f"{anio - 1:04d}-12" if m == 1 else f"{anio:04d}-{m - 1:02d}"
+
+
+def serie_mensual(filas: list[dict], medida: str) -> list[dict]:
+    """Igual que serie_diaria pero sumando por mes: {periodo, etiqueta, servicio, orden, monto}."""
+    acumulado = defaultdict(float)
+    for f in filas:
+        if f["servicio"] in AJUSTES_DE_FACTURA:
+            continue
+        acumulado[(mes_de(f["dia"]), nombre_de_serie(f["servicio"]))] += monto(f, medida)
+    return [
+        {"periodo": m, "etiqueta": etiqueta_de_mes(m), "servicio": s, "orden": orden_de_serie(s), "monto": round(v, 6)}
+        for (m, s), v in sorted(acumulado.items())
+    ]
+
+
+# Un mes cuenta como "completo" para comparar si hay datos de al menos esta fracción de sus días. Comparar
+# totales de un mes con 2 días de datos contra otro con 30 daría "+1300 %": un número sin sentido.
+COBERTURA_MINIMA = 0.9
+
+
+def dias_del_mes(mes: str) -> int:
+    from calendar import monthrange
+
+    return monthrange(int(mes[:4]), int(mes[5:7]))[1]
+
+
+def resumen_mensual(filas: list[dict]) -> list[dict]:
+    """Un renglón por mes con datos: totales (bruto, créditos, neto), cuántos de sus días tienen datos y el
+    bruto promedio por día con datos. Las variaciones contra el mes calendario anterior solo se calculan
+    cuando se pueden comparar de verdad:
+      - variacion_bruto / variacion_neto (totales): ambos meses con cobertura >= COBERTURA_MINIMA.
+      - variacion_promedio (bruto por día): el mes anterior con cobertura suficiente; sirve aunque el mes
+        actual vaya a medias, porque promedia solo los días que tienen datos."""
+    por_mes = defaultdict(list)
+    for f in filas:
+        por_mes[mes_de(f["dia"])].append(f)
+    base = {}
+    for m, fs in por_mes.items():
+        dias_con_datos = len({str(f["dia"])[:10] for f in fs})
+        t = totales(fs)
+        base[m] = {
+            "mes": m, **t, "dias_con_datos": dias_con_datos, "dias_del_mes": dias_del_mes(m),
+            "cobertura": dias_con_datos / dias_del_mes(m),
+            "promedio_diario_bruto": t["bruto"] / dias_con_datos,
+        }
+    filas_resumen = []
+    for m in sorted(base):
+        actual, previo = base[m], base.get(mes_anterior(m))
+        previo_ok = bool(previo) and previo["cobertura"] >= COBERTURA_MINIMA
+        ambos_ok = previo_ok and actual["cobertura"] >= COBERTURA_MINIMA
+        filas_resumen.append({
+            **actual,
+            "variacion_bruto": variacion(actual["bruto"], previo["bruto"]) if ambos_ok else None,
+            "variacion_neto": variacion(actual["neto"], previo["neto"]) if ambos_ok else None,
+            "variacion_promedio": variacion(actual["promedio_diario_bruto"], previo["promedio_diario_bruto"]) if previo_ok else None,
+        })
+    return filas_resumen
+
+
+def es_parcial(mes: str, ultimo_dia: str, hoy) -> bool:
+    """Un mes está incompleto si es el mes en curso, o si los datos se cortan antes de su último día."""
+    from calendar import monthrange
+
+    if mes == f"{hoy.year:04d}-{hoy.month:02d}":
+        return True
+    if mes_de(ultimo_dia) != mes:
+        return False
+    anio, m = int(mes[:4]), int(mes[5:7])
+    return str(ultimo_dia)[:10] < f"{mes}-{monthrange(anio, m)[1]:02d}"
+
+
+# --------------------------------------------------------------------------- detalle por concepto
+
+def es_egreso(sku: str) -> bool:
+    """¿Es una salida de datos (egreso / transferencia hacia afuera)? Por el nombre del SKU."""
+    s = (sku or "").lower()
+    return "egress" in s or "transfer out" in s
+
+
+def en_europa(ubicacion: str) -> bool:
+    u = (ubicacion or "").lower()
+    return u.startswith("europe") or u == "eu"
+
+
+def _clave_concepto(f: dict) -> tuple[str, str, str]:
+    return f["servicio"], f.get("sku") or "(sin SKU)", f.get("ubicacion") or "-"
+
+
+def tabla_por_concepto(filas: list[dict]) -> list[dict]:
+    """Detalle por servicio + SKU + región (el nivel en que la factura explica de dónde sale el gasto),
+    de mayor a menor valor bruto, con marcas de egreso de datos y de región europea."""
+    acumulado = defaultdict(lambda: {"bruto": 0.0, "creditos": 0.0})
+    for f in filas:
+        a = acumulado[_clave_concepto(f)]
+        a["bruto"] += float(f.get("bruto") or 0)
+        a["creditos"] += float(f.get("creditos") or 0)
+    filas_tabla = [
+        {"grupo": "(ajuste, no se grafica)" if s in AJUSTES_DE_FACTURA else nombre_de_serie(s),
+         "servicio": s, "sku": k, "ubicacion": u, "bruto": v["bruto"], "creditos": v["creditos"],
+         "neto": v["bruto"] + v["creditos"], "egreso": es_egreso(k), "europa": en_europa(u)}
+        for (s, k, u), v in acumulado.items()
+    ]
+    return sorted(filas_tabla, key=lambda r: (-abs(r["bruto"]), r["servicio"], r["sku"]))
+
+
+def _bruto_por_concepto(filas: list[dict], por_dia: bool) -> dict:
+    acumulado = defaultdict(float)
+    for f in filas:
+        acumulado[_clave_concepto(f)] += float(f.get("bruto") or 0)
+    if por_dia:
+        dias = len({str(f["dia"])[:10] for f in filas}) or 1
+        acumulado = {k: v / dias for k, v in acumulado.items()}
+    return dict(acumulado)
+
+
+def cambios_por_concepto(filas_ahora: list[dict], filas_antes: list[dict], por_dia: bool = False) -> list[dict]:
+    """Qué conceptos explican la diferencia entre dos conjuntos de filas (por ejemplo, dos meses), del que
+    más subió al que más bajó. por_dia=True compara el promedio por día con datos de cada lado, que sirve
+    cuando uno de los dos está incompleto. Solo el valor bruto: el neto lo tapan los créditos."""
+    ahora = _bruto_por_concepto(filas_ahora, por_dia)
+    antes = _bruto_por_concepto(filas_antes, por_dia)
+    cambios = []
+    for clave in set(ahora) | set(antes):
+        a, b = ahora.get(clave, 0.0), antes.get(clave, 0.0)
+        if abs(a - b) < 1e-9:
+            continue
+        servicio, sku, ubicacion = clave
+        cambios.append({"servicio": servicio, "sku": sku, "ubicacion": ubicacion, "ahora": a, "antes": b,
+                        "diferencia": a - b, "egreso": es_egreso(sku), "europa": en_europa(ubicacion)})
+    return sorted(cambios, key=lambda r: (-r["diferencia"], r["servicio"], r["sku"]))

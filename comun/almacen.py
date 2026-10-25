@@ -61,6 +61,11 @@ class Almacen:
         empieza con `prefijo`."""
         raise NotImplementedError
 
+    def listar_detalle(self, prefijo: str = "") -> list[dict]:
+        """Como listar(), pero cada archivo trae {nombre, bytes, actualizado}: el tamaño y cuándo
+        se escribió por última vez (segundos desde la época). Sirve para la limpieza."""
+        raise NotImplementedError
+
     def leer_texto(self, nombre: str) -> str | None:
         datos = self.leer(nombre)
         return None if datos is None else datos.decode("utf-8")
@@ -134,6 +139,14 @@ class AlmacenLocal(Almacen):
                 if relativo.startswith(prefijo):
                     encontrados.append(relativo)
         return sorted(encontrados)
+
+    def listar_detalle(self, prefijo=""):
+        base = self.base_dir or "."
+        detalle = []
+        for nombre in self.listar(prefijo):
+            estado = os.stat(os.path.join(base, nombre))
+            detalle.append({"nombre": nombre, "bytes": estado.st_size, "actualizado": estado.st_mtime})
+        return detalle
 
 
 class AlmacenGCS(Almacen):
@@ -259,6 +272,20 @@ class AlmacenGCS(Almacen):
             "listar archivos",
         )
         return sorted(nombres)
+
+    def listar_detalle(self, prefijo=""):
+        self._obtener_bucket()
+        completo = f"{self.prefijo}/{prefijo}" if self.prefijo else prefijo
+        quitar = len(self.prefijo) + 1 if self.prefijo else 0
+        blobs = self._con_reintentos(
+            lambda: list(self._cliente.list_blobs(self.bucket_nombre, prefix=completo)), "listar archivos",
+        )
+        detalle = [
+            {"nombre": b.name[quitar:], "bytes": int(b.size or 0),
+             "actualizado": b.updated.timestamp() if getattr(b, "updated", None) else 0.0}
+            for b in blobs
+        ]
+        return sorted(detalle, key=lambda d: d["nombre"])
 
 
 def crear_almacen(destino: str | None, verificar_privado: bool = True, credenciales=None) -> Almacen:

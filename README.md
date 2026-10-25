@@ -209,14 +209,26 @@ streamlit run administracion/admin.py --server.address localhost --server.port 8
   ejecuta el job con `--probar-correo`, así se prueba el camino real.
 - **Usuarios:** lista de correos autorizados, con rol, cuota de scans por
   semana (1 por defecto) y país por defecto de cada uno. Vive en la parte `admin/` del bucket privado.
-- **Gastos:** gráfico del gasto diario por servicio (barras apiladas, bruto o
-  neto, por proyecto, con tabla de detalle). Lee la **exportación de
+- **Gastos:** dos vistas del gasto por servicio (barras apiladas, bruto o neto, por proyecto): **Últimos días**,
+  con la variación contra el período anterior de igual duración, y **Por mes**, con la tendencia mes a mes. Las
+  variaciones de totales solo se calculan entre meses con datos de casi todos sus días (si no, darían números sin
+  sentido) y se agrega el promedio por día, que sí es comparable con un mes a medias. Trae el detalle por concepto
+  (SKU y región), con marcas de *egreso de datos* y *región de Europa*, y «qué explica el cambio» entre dos períodos.
+  Lee la **exportación de
   facturación a BigQuery**, que se activa una sola vez en la consola de
   Facturación (*Billing export → BigQuery export → Standard usage cost*); el
   nombre de la tabla `gcp_billing_export_v1_…` se pega en la pestaña Conexión.
   La exportación solo reúne datos desde que se activa y tarda horas en
   llenarse. El neto es lo que realmente se paga: el free tier aparece como
   créditos que descuentan el uso. Lógica en `administracion/gasto.py`, gráfico en `administracion/gasto_grafico.py`.
+- **Limpieza:** revisa qué hay en el bucket (cuánto pesa, de quién es cada carpeta) y propone borrar solo lo que
+  sobra: carpetas de personas que ya no están en la lista de usuarios, candados y banderas temporales colgados,
+  archivos de funciones que ya no existen y estados de scans que murieron sin cerrarse. **Nada se borra sin vista
+  previa y confirmación** (casilla + escribir `BORRAR`), y la lista de usuarios y todo lo de los usuarios vigentes
+  están protegidos por una guarda (`comun/limpieza.py`: si un solo nombre de la lista a borrar no pasa, no se borra
+  ninguno). Puede activar una regla del bucket que borra sola los candados y banderas con más de un día; los datos
+  de los usuarios nunca van en una regla automática. `administrar.bat` (opción 2) avisa cuando hay algo que limpiar.
+  Google guarda lo borrado unos días (borrado suave), así que un error se puede recuperar desde su consola.
 
 ## Uso (línea de comandos)
 

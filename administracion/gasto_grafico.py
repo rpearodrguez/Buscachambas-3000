@@ -18,11 +18,12 @@ REJILLA = {"claro": "#e1e0d9", "oscuro": "#2c2c2a"}
 TINTA_APAGADA = "#898781"  # etiquetas de ejes, igual en ambos modos
 
 
-def construir(datos: list[dict], moneda: str, oscuro: bool, dias: list[str] | None = None) -> alt.Chart:
-    """dias: todos los días del período (ISO, en orden); si se pasa, el eje los muestra todos, con o sin datos."""
+def construir(datos: list[dict], moneda: str, oscuro: bool, etiquetas_eje: list[str] | None = None, unidad: str = "día") -> alt.Chart:
+    """Barras apiladas por servicio. etiquetas_eje: todas las etiquetas del período, en orden; si se pasa,
+    el eje las muestra todas, con o sin datos. unidad: "día" o "mes" (títulos del eje y del tooltip)."""
     modo = "oscuro" if oscuro else "claro"
     series = gasto.series_presentes(datos)
-    eje_dias = [gasto.etiqueta_de_dia(d) for d in dias] if dias else gasto.etiquetas_en_orden(datos)
+    eje_dias = etiquetas_eje or gasto.etiquetas_en_orden(datos)
     return (
         alt.Chart(alt.Data(values=datos))
         .mark_bar(stroke=SUPERFICIE[modo], strokeWidth=2)  # 2px de fondo entre segmentos
@@ -36,7 +37,7 @@ def construir(datos: list[dict], moneda: str, oscuro: bool, dias: list[str] | No
             ),
             order=alt.Order("orden:Q", sort="ascending"),
             y=alt.Y(
-                "monto:Q", title=f"{moneda} por día",
+                "monto:Q", title=f"{moneda} por {unidad}",
                 axis=alt.Axis(labelColor=TINTA_APAGADA, titleColor=TINTA_SECUNDARIA[modo], gridColor=REJILLA[modo], domain=False, tickColor=REJILLA[modo]),
             ),
             color=alt.Color(
@@ -45,7 +46,7 @@ def construir(datos: list[dict], moneda: str, oscuro: bool, dias: list[str] | No
                 legend=alt.Legend(orient="bottom", labelColor=TINTA_SECUNDARIA[modo], symbolType="square"),
             ),
             tooltip=[
-                alt.Tooltip("dia:N", title="Día"),
+                alt.Tooltip("periodo:N", title=unidad.capitalize()),
                 alt.Tooltip("servicio:N", title="Servicio"),
                 alt.Tooltip("monto:Q", title=moneda, format=".4f"),
             ],

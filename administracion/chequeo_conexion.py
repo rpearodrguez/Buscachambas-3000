@@ -157,6 +157,23 @@ def chequear() -> int:
                 linea(FALLA, "no se pudo leer la lista de usuarios", type(e).__name__)
                 fallas += 1
 
+        if admin_almacen is not None:
+            try:
+                import time
+
+                from comun import limpieza, usuarios as _usuarios
+
+                raiz = almacenamiento.crear_almacen(f"gs://{cfg['bucket']}", credenciales=credenciales)
+                analisis = limpieza.analizar(raiz.listar_detalle(), _usuarios.cargar(admin_almacen), time.time())
+                pendientes = len(analisis["huerfanas"]) + len(analisis["temporales_vencidos"]) + len(analisis["obsoletos"])
+                uso = f"{analisis['bytes'] / 1024 / 1024:.1f} MB de 5 GB gratis"
+                if pendientes:
+                    linea(AVISO, f"el bucket tiene {pendientes} cosa(s) que limpiar", f"{uso}; abre la pestana Limpieza")
+                else:
+                    linea(OK, "bucket sin nada que limpiar", uso)
+            except Exception as e:
+                linea(AVISO, "no se pudo revisar la limpieza del bucket", type(e).__name__)
+
         if cfg.get("billing_tabla"):
             linea(OK, "tabla de facturacion configurada (pestana Gastos)")
         else:

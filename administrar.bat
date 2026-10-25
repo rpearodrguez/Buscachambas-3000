@@ -24,8 +24,8 @@ echo     Administracion del Job Scanner   (solo en este equipo)
 echo   ============================================================
 echo.
 echo     [1] Abrir la herramienta de administracion
-echo         Pantalla web local con cuatro pestanas: Conexion, Correo (SMTP),
-echo         Usuarios (rol, cuota y pais de cada uno) y Gastos de Google Cloud.
+echo         Pantalla web local con cinco pestanas: Conexion, Correo (SMTP),
+echo         Usuarios (rol, cuota y pais), Gastos de Google Cloud y Limpieza del bucket.
 echo         Antes revisa la conexion con Google Cloud.
 echo.
 echo     [2] Revisar la conexion con Google Cloud
@@ -210,11 +210,12 @@ echo     admin.py             La herramienta (pantalla web local). Pestanas:
 echo                            Conexion  - proyecto, region, job, bucket y secreto
 echo                            Correo    - servidor, usuario y token SMTP; correo de prueba
 echo                            Usuarios  - alta y edicion: rol, cuota semanal, pais por defecto
-echo                            Gastos    - grafico del gasto diario por servicio
+echo                            Gastos    - ultimos dias y por mes, con detalle por SKU y region
+echo                            Limpieza  - revisa el bucket y borra lo que sobra (con confirmacion)
 echo     chequeo_conexion.py  Los chequeos previos con Google Cloud (se puede correr solo).
 echo     admin_nube.py        Operaciones en Google Cloud: SMTP del job, token en Secret
 echo                          Manager, correo de prueba y consulta de gastos.
-echo     gasto.py             Calculo de los gastos: totales, series y tabla por servicio.
+echo     gasto.py             Calculo de los gastos: totales, meses, comparaciones y detalle por SKU.
 echo     gasto_grafico.py     El grafico de barras apiladas de la pestana Gastos.
 echo.
 echo   Tus datos personales NO estan en el repositorio: la conexion se guarda en
