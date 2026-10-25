@@ -32,8 +32,10 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
+import acceso
 import almacen as almacenamiento
 import lanzador
+import usuarios
 import scan_getonbrd as scanner
 import extraer_oferta as extractor
 
@@ -43,9 +45,12 @@ KEYWORDS_GUI_FILE = "keywords_gui_actual.txt"
 SCAN_LOG_FILE = "scan_stdout.log"
 
 # Dónde viven los archivos compartidos con el scan (estado, flag de detener,
-# CSV, keywords). Sin la variable de entorno, archivos en disco como siempre;
-# con BUSCACHAMBAS_STORAGE=gs://bucket, en la carpeta de este usuario del
-# bucket. USUARIO_LOCAL es un reemplazo hasta que haya login por usuario.
+# CSV, keywords). Sin variables de entorno / secrets, archivos en disco como
+# siempre y sin login (tu propia PC). Con BUSCACHAMBAS_JOB y
+# BUSCACHAMBAS_STORAGE=gs://bucket el scan corre en la nube: hay login con
+# Google, solo entran los correos de la lista de usuarios, y cada uno tiene su
+# carpeta del bucket (derivada de su correo en el servidor, nunca elegida por
+# el usuario).
 USUARIO_LOCAL = "local"
 
 
@@ -74,10 +79,13 @@ def _credenciales_gcp():
 
 
 STORAGE_BASE = _config("BUSCACHAMBAS_STORAGE")
-STORAGE_DESTINO = almacenamiento.destino_de_usuario(STORAGE_BASE, USUARIO_LOCAL)
 # Si está definido, el scan corre como Cloud Run Job (projects/../jobs/..) en
 # vez de un subproceso local; requiere STORAGE_BASE para compartir el estado.
 JOB_NAME = _config("BUSCACHAMBAS_JOB")
+try:
+    MAX_SIMULTANEOS = int(_config("BUSCACHAMBAS_MAX_SIMULTANEOS") or acceso.MAX_SIMULTANEOS_POR_DEFECTO)
+except ValueError:
+    MAX_SIMULTANEOS = acceso.MAX_SIMULTANEOS_POR_DEFECTO
 
 st.set_page_config(page_title="Job Scanner", layout="wide")
 st.title("Job Scanner")
@@ -91,15 +99,70 @@ def _crear_almacen(destino):
     return almacenamiento.crear_almacen(destino, credenciales=_credenciales_gcp())
 
 
-if JOB_NAME and not STORAGE_DESTINO:
+def _almacen_o_detener(destino):
+    try:
+        return _crear_almacen(destino)
+    except almacenamiento.ErrorAlmacen as e:
+        st.error(str(e))
+        st.stop()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _lista_de_usuarios(_almacen_admin):
+    # ttl corto: un usuario nuevo o quitado desde admin.py se nota en segundos,
+    # sin leer el bucket en cada re-ejecución de la página.
+    return usuarios.cargar(_almacen_admin)
+
+
+if JOB_NAME and not STORAGE_BASE:
     st.error("Configuración incompleta: el escaneo en la nube necesita almacenamiento compartido.")
     st.stop()
 
-try:
-    almacen = _crear_almacen(STORAGE_DESTINO)
-except almacenamiento.ErrorAlmacen as e:
-    st.error(str(e))
-    st.stop()
+usuario_email = None
+info_usuario = None
+USUARIO_ID = USUARIO_LOCAL
+if JOB_NAME:
+    # --- login y lista de usuarios (todo falla cerrado) ---
+    try:
+        login_configurado = "auth" in st.secrets
+    except Exception:
+        login_configurado = False
+    if not login_configurado:
+        st.error("El inicio de sesión no está configurado en el servidor.")
+        st.stop()
+    try:
+        sesion_iniciada = bool(st.user.is_logged_in)
+    except Exception:
+        sesion_iniciada = False  # ante la duda, sin sesión
+    if not sesion_iniciada:
+        st.info("Inicia sesión con tu cuenta de Google para continuar.")
+        st.button("Iniciar sesión con Google", on_click=st.login)
+        st.stop()
+
+    try:
+        lista_usuarios = _lista_de_usuarios(_almacen_o_detener(f"{STORAGE_BASE.rstrip('/')}/admin"))
+    except (usuarios.ErrorUsuarios, almacenamiento.ErrorAlmacen):
+        st.error("No se pudo verificar tu acceso en este momento. Inténtalo más tarde.")
+        st.stop()
+
+    motivo_acceso, info_usuario = acceso.decidir_acceso(
+        st.user.get("email"), st.user.get("email_verified"), lista_usuarios
+    )
+    if motivo_acceso != "ok":
+        if motivo_acceso == "no_autorizado":
+            st.error("Tu cuenta no tiene acceso a esta herramienta. Pídele acceso al administrador.")
+        else:
+            st.error("No se pudo verificar tu cuenta de Google.")
+        st.button("Cerrar sesión", on_click=st.logout)
+        st.stop()
+
+    usuario_email = usuarios.normalizar_correo(st.user.get("email"))
+    USUARIO_ID = almacenamiento.id_usuario(usuario_email)
+    st.sidebar.caption(f"Sesión iniciada como {usuario_email}")
+    st.sidebar.button("Cerrar sesión", on_click=st.logout)
+
+STORAGE_DESTINO = almacenamiento.destino_de_usuario(STORAGE_BASE, USUARIO_ID)
+almacen = _almacen_o_detener(STORAGE_DESTINO)
 
 
 def leer_estado_scan() -> dict | None:
@@ -223,13 +286,13 @@ with st.sidebar.expander("País y sitios", expanded=True):
 
 with st.sidebar.expander("Aviso por correo"):
     if JOB_NAME:
-        # En la nube el SMTP (cuenta y contraseña) lo tiene configurado el
-        # job, no se escribe ni se guarda desde esta pantalla: acá solo se
-        # elige a quién avisar.
-        destino_aviso = st.text_input("Correo que recibirá el aviso", key="email_destino_nube").strip()
-        config_email = {"destinatario": destino_aviso}
-        email_listo = "@" in destino_aviso
-        enviar_correo = st.checkbox("Enviar correo al terminar el scan", value=False, disabled=not email_listo)
+        # En la nube el SMTP (cuenta y contraseña) lo administra solo el
+        # administrador, desde admin.py. Y el aviso va siempre al correo con el
+        # que el usuario inició sesión: no hay un campo libre de destinatario
+        # (permitiría usar la cuenta de envío para escribirle a terceros).
+        config_email = {"destinatario": usuario_email}
+        email_listo = True
+        enviar_correo = st.checkbox(f"Avisarme por correo a {usuario_email} al terminar", value=False)
         guardar = probar = False
     else:
         config_email = scanner.cargar_config_email() or {}
@@ -360,14 +423,37 @@ if click_buscar or click_buscar_completa:
     if not keywords:
         st.error("No hay keywords para buscar.")
     else:
+        lock_tomado = False
         try:
+            if JOB_NAME:
+                # Reglas de la nube, en orden: cuota semanal, tope global de
+                # escaneos simultáneos y candado contra doble clic. Cualquier
+                # duda corta (ver acceso.py).
+                ahora = time.time()
+                puede, motivo, vuelve = acceso.evaluar_cuota(info_usuario, acceso.cargar_usos(almacen), ahora)
+                if not puede:
+                    cuando = f" Podrás volver a escanear el {datetime.fromtimestamp(vuelve):%d/%m/%Y a las %H:%M}." if vuelve else ""
+                    st.error(motivo + cuando)
+                    st.stop()
+                if acceso.contar_scans_activos(_almacen_o_detener(STORAGE_BASE), ahora) >= MAX_SIMULTANEOS:
+                    st.error("Hay varios escaneos en curso en este momento. Inténtalo de nuevo en unos minutos.")
+                    st.stop()
+                lock_tomado = acceso.adquirir_lock(almacen, ahora)
+                if not lock_tomado:
+                    st.error("Ya hay un escaneo iniciándose. Espera unos segundos.")
+                    st.stop()
             lanzar_scan(
                 pais, sitios_elegidos, keywords, require_remote, click_buscar_completa,
                 email_a=config_email["destinatario"] if enviar_correo and email_listo else None,
             )
+            if JOB_NAME:
+                acceso.registrar_uso(almacen, ahora)  # solo cuenta si el job se lanzó
         except (lanzador.ErrorLanzador, almacenamiento.ErrorAlmacen) as e:
             st.error(str(e))
             st.stop()
+        finally:
+            if lock_tomado:
+                acceso.liberar_lock(almacen)
         # Esperar a que el subproceso escriba su primer status.json (el
         # arranque de Python en Windows puede tardar más que un sleep fijo
         # corto) antes de refrescar la página — si el rerun cae antes de que

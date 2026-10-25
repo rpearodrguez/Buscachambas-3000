@@ -125,6 +125,26 @@ entorno o en los secrets de la plataforma):**
 - Credenciales (`email_config.json`, llaves de cuentas de servicio,
   `.streamlit/secrets.toml`, `.env`) están en `.gitignore` y `.gcloudignore`.
 
+### Login, usuarios y cuotas (versión en la nube)
+
+Con `BUSCACHAMBAS_JOB` y `BUSCACHAMBAS_STORAGE` definidos (variables de
+entorno o secrets; plantilla en `.streamlit/secrets.example.toml`), la GUI
+exige login con Google (`st.login`, necesita `Authlib`):
+
+- Entran solo los correos de la lista de usuarios (`admin/usuarios.json` en el
+  bucket, que se edita desde `admin.py`), con el correo verificado por Google.
+  Sin lista, sin correo verificado o ante cualquier duda, no se entra.
+- Cada usuario tiene su carpeta en el bucket, nombrada con un hash de su
+  correo calculado en el servidor.
+- **Cuota:** scans por semana por usuario (ventana móvil de 7 días; 1 por
+  defecto; los administradores no tienen tope). **Un scan a la vez** por
+  usuario (candado atómico en el bucket) y un **tope global** de scans
+  simultáneos (`BUSCACHAMBAS_MAX_SIMULTANEOS`, 2 por defecto).
+- El aviso por correo va siempre al correo con el que se inició sesión.
+- Sin esas variables (tu PC), todo sigue igual que antes: sin login ni cuotas.
+
+Lógica en `acceso.py` y `usuarios.py`, con tests (`python -m unittest discover -s tests`).
+
 ### Administración (solo en tu PC)
 
 `admin.py` es una herramienta local para administrar la versión en la nube

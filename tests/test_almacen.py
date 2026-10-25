@@ -23,6 +23,10 @@ class NotFound(Exception):  # mismo nombre que la excepción real de google-clou
     pass
 
 
+class PreconditionFailed(Exception):  # idem: el bucket rechaza if_generation_match=0 si ya existe
+    pass
+
+
 class FakeBlob:
     def __init__(self, store, clave, fallar):
         self.store, self.clave, self.fallar = store, clave, fallar
@@ -34,9 +38,11 @@ class FakeBlob:
             raise NotFound()
         return self.store[self.clave]
 
-    def upload_from_string(self, datos):
+    def upload_from_string(self, datos, if_generation_match=None):
         if self.fallar:
             raise RuntimeError(f"boom en {self.clave}")
+        if if_generation_match == 0 and self.clave in self.store:
+            raise PreconditionFailed()
         self.store[self.clave] = datos
 
     def exists(self):
@@ -76,6 +82,9 @@ class FakeClient:
 
     def bucket(self, nombre):
         return FakeBucket(self.store, **self.kw)
+
+    def list_blobs(self, nombre_bucket, prefix=""):
+        return [type("B", (), {"name": k})() for k in self.store if k.startswith(prefix)]
 
 
 def gcs(prefijo=PREFIJO_SECRETO, **kw):
@@ -155,6 +164,41 @@ class AlmacenGCSTests(unittest.TestCase):
         for malo in ("gs://", "s3://x", "/tmp/algo"):
             with self.assertRaises(ValueError):
                 alm.crear_almacen(malo, verificar_privado=False)
+
+
+class CandadoYListadoTests(unittest.TestCase):
+    def test_crear_si_no_existe_local(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = alm.AlmacenLocal(d)
+            self.assertTrue(a.crear_si_no_existe("l.lock", b"1"))
+            self.assertFalse(a.crear_si_no_existe("l.lock", b"2"))
+            self.assertEqual(a.leer("l.lock"), b"1")
+
+    def test_crear_si_no_existe_gcs_es_atomico(self):
+        a = gcs()
+        self.assertTrue(a.crear_si_no_existe("l.lock", b"1"))
+        self.assertFalse(a.crear_si_no_existe("l.lock", b"2"))
+        self.assertEqual(a.leer("l.lock"), b"1")
+
+    def test_crear_si_no_existe_gcs_con_falla_real_es_error_generico(self):
+        with self.assertRaises(alm.ErrorAlmacen) as ctx:
+            gcs(fallar=True).crear_si_no_existe("l.lock", b"1")
+        self.assertNotIn(BUCKET_SECRETO, str(ctx.exception))
+
+    def test_listar_local_y_gcs_devuelven_nombres_relativos(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "users", "aaa"))
+            a = alm.AlmacenLocal(d)
+            a.escribir("users/aaa/scan_status.json", b"{}")
+            a.escribir("otro.txt", b"x")
+            self.assertEqual(a.listar("users/"), ["users/aaa/scan_status.json"])
+        cliente = FakeClient()
+        raiz = alm.AlmacenGCS("b", "", cliente=cliente)
+        raiz.escribir("users/aaa/scan_status.json", b"{}")
+        raiz.escribir("admin/usuarios.json", b"{}")
+        self.assertEqual(raiz.listar("users/"), ["users/aaa/scan_status.json"])
+        de_usuario = alm.AlmacenGCS("b", "users/aaa", cliente=cliente)
+        self.assertEqual(de_usuario.listar(), ["scan_status.json"])
 
 
 class UsuariosTests(unittest.TestCase):

@@ -51,6 +51,16 @@ class Almacen:
         """Dónde quedó el archivo, para mostrarlo en mensajes."""
         raise NotImplementedError
 
+    def crear_si_no_existe(self, nombre: str, datos: bytes) -> bool:
+        """Crea el archivo solo si no existía, de forma atómica. True si lo
+        creó, False si ya estaba (sirve de candado entre procesos)."""
+        raise NotImplementedError
+
+    def listar(self, prefijo: str = "") -> list[str]:
+        """Nombres (relativos a este almacén) de los archivos cuyo nombre
+        empieza con `prefijo`."""
+        raise NotImplementedError
+
     def leer_texto(self, nombre: str) -> str | None:
         datos = self.leer(nombre)
         return None if datos is None else datos.decode("utf-8")
@@ -106,6 +116,24 @@ class AlmacenLocal(Almacen):
 
     def descripcion(self, nombre):
         return self._ruta(nombre)
+
+    def crear_si_no_existe(self, nombre, datos):
+        try:
+            with open(self._ruta(nombre), "xb") as f:
+                f.write(datos)
+            return True
+        except FileExistsError:
+            return False
+
+    def listar(self, prefijo=""):
+        base = self.base_dir or "."
+        encontrados = []
+        for raiz, _, archivos in os.walk(base):
+            for archivo in archivos:
+                relativo = os.path.relpath(os.path.join(raiz, archivo), base).replace(os.sep, "/")
+                if relativo.startswith(prefijo):
+                    encontrados.append(relativo)
+        return sorted(encontrados)
 
 
 class AlmacenGCS(Almacen):
@@ -172,8 +200,8 @@ class AlmacenGCS(Almacen):
             try:
                 return operacion()
             except Exception as e:
-                if type(e).__name__ == "NotFound":
-                    raise
+                if type(e).__name__ in ("NotFound", "PreconditionFailed"):
+                    raise  # respuestas esperadas del bucket, no fallos para reintentar
                 if intento == self.INTENTOS - 1:
                     # Detalle (con el nombre del bucket) solo al log del
                     # servidor; hacia arriba sale un mensaje genérico.
@@ -206,6 +234,29 @@ class AlmacenGCS(Almacen):
         # Nunca el nombre del bucket ni el prefijo: este texto termina en
         # mensajes de la GUI y en logs.
         return f"almacenamiento privado ({nombre})"
+
+    def crear_si_no_existe(self, nombre, datos):
+        # if_generation_match=0: el bucket rechaza la escritura si el objeto
+        # ya existe, de forma atómica (dos procesos no pueden crearlo a la vez).
+        try:
+            self._con_reintentos(lambda: self._blob(nombre).upload_from_string(datos, if_generation_match=0), "tomar un candado")
+            return True
+        except ErrorAlmacen:
+            raise
+        except Exception as e:
+            if type(e).__name__ == "PreconditionFailed":
+                return False
+            raise
+
+    def listar(self, prefijo=""):
+        self._obtener_bucket()
+        completo = f"{self.prefijo}/{prefijo}" if self.prefijo else prefijo
+        quitar = len(self.prefijo) + 1 if self.prefijo else 0
+        nombres = self._con_reintentos(
+            lambda: [b.name[quitar:] for b in self._cliente.list_blobs(self.bucket_nombre, prefix=completo)],
+            "listar archivos",
+        )
+        return sorted(nombres)
 
 
 def crear_almacen(destino: str | None, verificar_privado: bool = True, credenciales=None) -> Almacen:
