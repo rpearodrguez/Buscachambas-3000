@@ -235,6 +235,11 @@ with tab_usuarios:
 # Gastos
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner=False)
+def _ultimo_dia(cfg_tabla: str, proyecto: str):
+    return admin_nube.ultimo_dia_con_datos({"billing_tabla": cfg_tabla, "project": proyecto})
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def _gasto(cfg_tabla: str, proyecto: str, dias: int):
     # cfg_tabla/proyecto entran como argumentos para que formen parte de la clave de la caché
     return admin_nube.consultar_gasto({"billing_tabla": cfg_tabla, "project": proyecto}, dias)
@@ -266,7 +271,7 @@ with tab_gastos:
     else:
         st.subheader("Gastos de Google Cloud")
         col_p, col_m, col_r = st.columns(3)
-        dias = col_p.selectbox("Período", [7, 30, 90], index=1, format_func=lambda d: f"Últimos {d} días")
+        dias = col_p.selectbox("Período", [7, 30, 90], index=2, format_func=lambda d: f"Últimos {d} días")
         medida = col_m.selectbox(
             "Medida", gasto.MEDIDAS,
             format_func=lambda m: "Bruto (valor de lo usado)" if m == "bruto" else "Neto (lo que se paga)",
@@ -277,7 +282,18 @@ with tab_gastos:
             _mostrar_error(e, "No se pudo consultar la facturación")
             todas = []
         if not todas:
-            st.warning("Todavía no hay datos de facturación en ese período. La exportación puede tardar unas horas en llenarse.")
+            try:
+                ultimo = _ultimo_dia(cfg["billing_tabla"], cfg["project"])
+            except Exception:
+                ultimo = None
+            if ultimo:
+                st.warning(
+                    f"No hay datos de facturación en ese período. El dato más reciente de la exportación es del "
+                    f"{ultimo}: la exportación va por detrás y se pone al día sola en uno o dos días. "
+                    f"Prueba con un período más largo para ver lo que ya llegó."
+                )
+            else:
+                st.warning("La tabla de facturación todavía está vacía. La exportación puede tardar unas horas en llenarse.")
         else:
             moneda = gasto.moneda_principal(todas)
             todas = gasto.solo_moneda(todas, moneda)

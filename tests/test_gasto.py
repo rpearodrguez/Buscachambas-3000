@@ -161,5 +161,12 @@ class ValidacionTablaTests(unittest.TestCase):
             admin_nube.consultar_gasto({"project": "p", "billing_tabla": "p.d.t`;--"}, 30)
 
 
+    def test_ultimo_dia_sin_tabla_o_con_tabla_peligrosa_se_rechaza(self):
+        with self.assertRaises(admin_nube.ErrorAdmin):
+            admin_nube.ultimo_dia_con_datos({"project": "p"})
+        with self.assertRaises(admin_nube.ErrorAdmin):
+            admin_nube.ultimo_dia_con_datos({"project": "p", "billing_tabla": "p.d.t`;--"})
+
+
 if __name__ == "__main__":
     unittest.main()

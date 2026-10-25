@@ -215,3 +215,16 @@ def consultar_gasto(cfg: dict, dias: int, credenciales=None) -> list[dict]:
          "moneda": r["moneda"], "bruto": float(r["bruto"] or 0), "creditos": float(r["creditos"] or 0)}
         for r in trabajo.result()
     ]
+
+
+def ultimo_dia_con_datos(cfg: dict, credenciales=None) -> str | None:
+    """Fecha ISO (UTC) del dato más reciente de la exportación de facturación, o None si la tabla está
+    vacía. Sirve para explicar un período sin datos: la exportación va por detrás de la realidad."""
+    tabla = cfg.get("billing_tabla")
+    if not tabla or not _FORMATO_TABLA_BILLING.match(tabla):
+        raise ErrorAdmin("Falta la tabla de la exportación de facturación (pestaña Conexión).")
+    from google.cloud import bigquery
+
+    cliente = bigquery.Client(project=cfg["project"], credentials=credenciales)
+    fila = list(cliente.query(f"SELECT MAX(DATE(usage_start_time)) AS ultimo FROM `{tabla}`").result())[0]
+    return fila["ultimo"].isoformat() if fila["ultimo"] else None
