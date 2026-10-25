@@ -1,7 +1,7 @@
 """
 GUI (Streamlit) del Job Scanner
 --------------------------------
-Interfaz web local para correr scan_getonbrd.py y extraer_oferta.py sin
+Interfaz web local para correr escaner/scan_getonbrd.py y escaner/extraer_oferta.py sin
 tocar la línea de comandos: elegir país/sitios/keywords, correr el scan
 con barra de progreso, filtrar y exportar resultados, y extraer el texto
 completo de una oferta puntual.
@@ -9,14 +9,14 @@ completo de una oferta puntual.
 El scan corre como un PROCESO APARTE del sistema operativo (no un hilo
 dentro de Streamlit): esta página lo lanza con subprocess.Popen y desde
 ahí solo lee su progreso desde un archivo JSON (scan_status.json) que el
-propio scan_getonbrd.py va escribiendo. Esto es a propósito — así el scan
+propio escaner/scan_getonbrd.py va escribiendo. Esto es a propósito — así el scan
 sigue corriendo aunque cierres el navegador, reinicies Streamlit, o esté
 corriendo mientras se edita el código: no depende de objetos en memoria
 de esta página, que se pierden en cualquiera de esos casos.
 
 USO:
     pip install streamlit pandas pypdf python-docx pyperclip
-    streamlit run gui.py
+    streamlit run app/gui.py
 """
 
 import io
@@ -32,12 +32,16 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-import acceso
-import almacen as almacenamiento
-import lanzador
-import usuarios
-import scan_getonbrd as scanner
-import extraer_oferta as extractor
+# Los puntos de entrada viven en subcarpetas: la raíz del repo va en sys.path
+# para poder importar los paquetes hermanos (comun, escaner, ...).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(RAIZ)  # estado, CSV, keywords y logs locales viven en la raíz del repo, no en app/
+
+from comun import acceso, lanzador, usuarios  # noqa: E402
+from comun import almacen as almacenamiento  # noqa: E402
+from escaner import extraer_oferta as extractor  # noqa: E402
+from escaner import scan_getonbrd as scanner  # noqa: E402
 
 STATUS_FILE = "scan_status.json"
 DETENER_FILE = "detener.flag"
@@ -80,10 +84,14 @@ def _credenciales_gcp():
     return service_account.Credentials.from_service_account_info(info)
 
 
-STORAGE_BASE = _config("BUSCACHAMBAS_STORAGE")
+# BUSCACHAMBAS_MODO=local fuerza el modo local (archivos en esta carpeta, sin login ni
+# cuotas) aunque .streamlit/secrets.toml tenga la configuración de la nube: es lo que
+# usa iniciar_gui.cmd, para que escanear desde tu PC siga igual que siempre.
+MODO_LOCAL = os.environ.get("BUSCACHAMBAS_MODO", "").strip().lower() == "local"
+STORAGE_BASE = None if MODO_LOCAL else _config("BUSCACHAMBAS_STORAGE")
 # Si está definido, el scan corre como Cloud Run Job (projects/../jobs/..) en
 # vez de un subproceso local; requiere STORAGE_BASE para compartir el estado.
-JOB_NAME = _config("BUSCACHAMBAS_JOB")
+JOB_NAME = None if MODO_LOCAL else _config("BUSCACHAMBAS_JOB")
 try:
     MAX_SIMULTANEOS = int(_config("BUSCACHAMBAS_MAX_SIMULTANEOS") or acceso.MAX_SIMULTANEOS_POR_DEFECTO)
 except ValueError:
@@ -111,7 +119,7 @@ def _almacen_o_detener(destino):
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _lista_de_usuarios(_almacen_admin):
-    # ttl corto: un usuario nuevo o quitado desde admin.py se nota en segundos,
+    # ttl corto: un usuario nuevo o quitado desde administracion/admin.py se nota en segundos,
     # sin leer el bucket en cada re-ejecución de la página.
     return usuarios.cargar(_almacen_admin)
 
@@ -233,7 +241,7 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
         lanzador.lanzar_job(JOB_NAME, argumentos, credenciales=_credenciales_gcp())
         return
 
-    cmd = [sys.executable, "scan_getonbrd.py"] + argumentos
+    cmd = [sys.executable, os.path.join(RAIZ, "escaner", "scan_getonbrd.py")] + argumentos
 
     # stdout/stderr a un archivo (no DEVNULL): si el proceso crashea con una
     # excepción no manejada, scan_status.json queda con "corriendo": true
@@ -242,7 +250,7 @@ def lanzar_scan(pais, ids_sitios, keywords, require_remote, descripcion_completa
     log = open(SCAN_LOG_FILE, "w", encoding="utf-8")
     subprocess.Popen(
         cmd,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=RAIZ,
         stdout=log,
         stderr=log,
     )
@@ -289,7 +297,7 @@ with st.sidebar.expander("País y sitios", expanded=True):
 with st.sidebar.expander("Aviso por correo"):
     if JOB_NAME:
         # En la nube el SMTP (cuenta y contraseña) lo administra solo el
-        # administrador, desde admin.py. Y el aviso va siempre al correo con el
+        # administrador, desde administracion/admin.py. Y el aviso va siempre al correo con el
         # que el usuario inició sesión: no hay un campo libre de destinatario
         # (permitiría usar la cuenta de envío para escribirle a terceros).
         config_email = {"destinatario": usuario_email}
@@ -430,7 +438,7 @@ if click_buscar or click_buscar_completa:
             if JOB_NAME:
                 # Reglas de la nube, en orden: cuota semanal, tope global de
                 # escaneos simultáneos y candado contra doble clic. Cualquier
-                # duda corta (ver acceso.py).
+                # duda corta (ver comun/acceso.py).
                 ahora = time.time()
                 puede, motivo, vuelve = acceso.evaluar_cuota(info_usuario, acceso.cargar_usos(almacen), ahora)
                 if not puede:
@@ -493,7 +501,7 @@ if proceso_muerto:
         with st.expander("Ver log del proceso (stdout/stderr)", expanded=True):
             st.code(contenido_log[-8000:] or "(log vacío)", language="text")
     else:
-        st.caption("No hay scan_stdout.log — este scan se lanzó antes de que se agregara este log (versión vieja de gui.py).")
+        st.caption("No hay scan_stdout.log — este scan se lanzó antes de que se agregara este log (versión vieja de app/gui.py).")
 
 MAX_LINEAS_LOG_VISIBLES = 10
 

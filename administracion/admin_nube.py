@@ -1,5 +1,5 @@
 """
-Operaciones de administración sobre la nube (las usa admin.py, que corre SOLO
+Operaciones de administración sobre la nube (las usa administracion/admin.py, que corre SOLO
 en la PC del administrador, con sus propias credenciales de Google)
 ------------------------------------------------------------------------------
 - configuración local de conexión (admin_local.json, gitignored: ahí van el

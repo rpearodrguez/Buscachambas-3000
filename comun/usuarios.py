@@ -4,7 +4,7 @@ Lista de usuarios autorizados
 Quién puede entrar a la GUI, con qué rol y qué cuota semanal de scans tiene.
 Vive como un archivo JSON en la parte "admin" del bucket privado (nunca en el
 repo: son correos de personas). Lo edita solo la herramienta de
-administración (admin.py, que corre en la PC del administrador); la GUI
+administración (administracion/admin.py, que corre en la PC del administrador); la GUI
 pública solo lo lee para decidir si alguien puede entrar.
 
 Todo son funciones puras sobre un dict, para poder probarlas sin la nube:

@@ -10,7 +10,7 @@ pública no tiene ningún permiso para cambiar esta configuración.
 
     pip install -r requirements-admin.txt
     gcloud auth application-default login      # una vez, entras con tu cuenta de Google
-    streamlit run admin.py --server.address localhost
+    streamlit run administracion/admin.py --server.address localhost
 
 Los datos de conexión (proyecto, región, job, bucket) se guardan en
 admin_local.json, que está en .gitignore: el repo es público y nada de eso
@@ -18,13 +18,19 @@ va ahí. El token SMTP se escribe sin mostrarse, va directo a Secret Manager y
 no se puede volver a leer desde aquí.
 """
 
+import os
+import sys
+
 import streamlit as st
 
-import admin_nube
-import almacen as almacenamiento
-import gasto
-import gasto_grafico
-import usuarios
+# Los puntos de entrada viven en subcarpetas: la raíz del repo va en sys.path
+# para poder importar los paquetes hermanos (comun, escaner, ...).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(RAIZ)  # admin_local.json y demás archivos locales viven en la raíz del repo
+
+from administracion import admin_nube, gasto, gasto_grafico  # noqa: E402
+from comun import almacen as almacenamiento, usuarios  # noqa: E402
 
 st.set_page_config(page_title="Administración — Job Scanner", layout="wide")
 st.title("Administración")

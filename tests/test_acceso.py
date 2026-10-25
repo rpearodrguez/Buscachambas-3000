@@ -9,9 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import acceso
-import almacen as alm
-import usuarios
+from comun import acceso, usuarios
+from comun import almacen as alm
 
 DIA = 24 * 3600
 AHORA = 1_000_000.0

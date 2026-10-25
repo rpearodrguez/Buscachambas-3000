@@ -7,7 +7,7 @@ disco; en la nube (GUI en Streamlit Cloud, scan en un Cloud Run Job) no
 comparten disco, así que viven en un bucket de Cloud Storage, con una
 carpeta por usuario.
 
-Este módulo esconde esa diferencia: scan_getonbrd.py y gui.py piden
+Este módulo esconde esa diferencia: escaner/scan_getonbrd.py y app/gui.py piden
 "leer/escribir el archivo X" a un Almacen y no saben si es disco o bucket.
 
     crear_almacen(None)                          -> disco, rutas tal cual (modo local de siempre)

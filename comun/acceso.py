@@ -10,8 +10,7 @@ cualquier duda, no se entra / no se lanza.
 
 import json
 
-import lanzador
-import usuarios
+from comun import lanzador, usuarios
 
 VENTANA_SEMANA = 7 * 24 * 3600
 USO_ARCHIVO = "uso.json"
@@ -121,5 +120,5 @@ def contar_scans_activos(almacen_raiz, ahora: float) -> int:
 
 
 def usuarios_prefijo() -> str:
-    import almacen as almacenamiento
+    from comun import almacen as almacenamiento
     return almacenamiento.PREFIJO_USUARIOS

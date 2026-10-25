@@ -39,10 +39,34 @@ pip install -r requirements.txt
 (o `pip install requests beautifulsoup4 --break-system-packages` si solo
 vas a usar la línea de comandos, sin GUI)
 
+## Estructura del proyecto
+
+```
+app/            gui.py                 GUI de usuarios (Streamlit): streamlit run app/gui.py
+escaner/        scan_getonbrd.py       el scanner (CLI), y extraer_oferta.py
+administracion/ admin.py               herramienta de administración, solo en tu PC
+                admin_nube.py, gasto.py, gasto_grafico.py
+comun/          almacen.py, lanzador.py, acceso.py, usuarios.py   lo que comparten
+cloud/          Dockerfiles y cloudbuild del scanner y de la sonda de IPs
+tests/          python -m unittest discover -s tests
+```
+
+Los puntos de entrada se ejecutan por su ruta (`streamlit run app/gui.py`,
+`python escaner/scan_getonbrd.py`) desde cualquier carpeta: cada uno agrega la
+raíz del repo al path para importar los demás paquetes. Tus datos locales
+(`ofertas_empleos.csv`, `keywords.txt`, `email_config.json`, `admin_local.json`,
+`.streamlit/secrets.toml`) viven en la **raíz** del repo; la GUI y el admin se
+posicionan ahí al arrancar.
+
+Si existe `.streamlit/secrets.toml` con la configuración de la nube, la GUI
+arranca en modo nube (con login). Para escanear desde tu PC como siempre,
+`iniciar_gui.cmd` define `BUSCACHAMBAS_MODO=local`, que ignora esa
+configuración.
+
 ## GUI (opcional)
 
 ```bash
-streamlit run gui.py
+streamlit run app/gui.py
 ```
 
 En Windows, `iniciar_gui.cmd` hace lo mismo con doble-click: revisa si
@@ -61,12 +85,12 @@ oferta puntual — todo sin usar la línea de comandos.
 **El scan corre como proceso aparte del sistema operativo**, lanzado con
 `subprocess.Popen` y coordinado por dos archivos en esta carpeta:
 `scan_status.json` (progreso, log y resultados en vivo, que
-`scan_getonbrd.py` escribe y `gui.py` solo lee) y `detener.flag` (crearlo
+`escaner/scan_getonbrd.py` escribe y `app/gui.py` solo lee) y `detener.flag` (crearlo
 corta el scan; la GUI lo crea al apretar "Detener"). Esto es a propósito:
 el scan sigue corriendo aunque cierres el navegador, reinicies Streamlit,
 o el código se esté editando mientras tanto — nada depende de objetos en
 memoria de la página, que se pierden en cualquiera de esos casos. Usa las
-mismas funciones de `scan_getonbrd.py` y `extraer_oferta.py`, así que
+mismas funciones de `escaner/scan_getonbrd.py` y `escaner/extraer_oferta.py`, así que
 cualquier sitio/país nuevo que se agregue ahí aparece automático en la
 GUI.
 
@@ -87,7 +111,7 @@ tiene la contraseña; también se puede crear a mano a partir de
 aplicación** (cuenta de Google → Seguridad → verificación en 2 pasos →
 Contraseñas de aplicaciones), no la clave normal. Después marca "Enviar
 correo al terminar el scan". Por consola:
-`python scan_getonbrd.py --email-a tu@correo.com`. El correo trae la
+`python escaner/scan_getonbrd.py --email-a tu@correo.com`. El correo trae la
 duración, los totales y la lista de ofertas nuevas, y adjunta
 `ofertas_empleos.csv` con todos los resultados guardados; si el scan se detiene
 con el botón, también avisa. Si el envío falla, el scan igual queda
@@ -99,10 +123,10 @@ correo.
 Por defecto el estado del scan, el flag de detener, las keywords y el CSV
 son archivos en esta carpeta. Para correr el scan y la GUI en máquinas
 distintas, esos archivos pueden vivir en un bucket de Cloud Storage con una
-carpeta por usuario: `python scan_getonbrd.py --storage gs://<bucket>/<carpeta>`
+carpeta por usuario: `python escaner/scan_getonbrd.py --storage gs://<bucket>/<carpeta>`
 y, para la GUI, la variable de entorno `BUSCACHAMBAS_STORAGE=gs://<bucket>`
 (requiere `pip install -r requirements-cloud.txt`). El código vive en
-`almacen.py`.
+`comun/almacen.py`.
 
 **Seguridad (el repo es público: nada de esto va aquí, solo en variables de
 entorno o en los secrets de la plataforma):**
@@ -132,7 +156,7 @@ entorno o secrets; plantilla en `.streamlit/secrets.example.toml`), la GUI
 exige login con Google (`st.login`, necesita `Authlib`):
 
 - Entran solo los correos de la lista de usuarios (`admin/usuarios.json` en el
-  bucket, que se edita desde `admin.py`), con el correo verificado por Google.
+  bucket, que se edita desde `administracion/admin.py`), con el correo verificado por Google.
   Sin lista, sin correo verificado o ante cualquier duda, no se entra.
 - Cada usuario tiene su carpeta en el bucket, nombrada con un hash de su
   correo calculado en el servidor.
@@ -143,11 +167,11 @@ exige login con Google (`st.login`, necesita `Authlib`):
 - El aviso por correo va siempre al correo con el que se inició sesión.
 - Sin esas variables (tu PC), todo sigue igual que antes: sin login ni cuotas.
 
-Lógica en `acceso.py` y `usuarios.py`, con tests (`python -m unittest discover -s tests`).
+Lógica en `comun/acceso.py` y `comun/usuarios.py`, con tests (`python -m unittest discover -s tests`).
 
 ### Administración (solo en tu PC)
 
-`admin.py` es una herramienta local para administrar la versión en la nube
+`administracion/admin.py` es una herramienta local para administrar la versión en la nube
 sin escribir comandos: datos de conexión, correo SMTP y usuarios autorizados.
 Corre con **tus** credenciales de Google, no con las de la GUI pública, que
 no tiene ningún permiso para cambiar esta configuración.
@@ -155,7 +179,7 @@ no tiene ningún permiso para cambiar esta configuración.
 ```
 pip install -r requirements-admin.txt
 gcloud auth application-default login      # una vez, con tu cuenta de Google
-streamlit run admin.py --server.address localhost
+streamlit run administracion/admin.py --server.address localhost
 ```
 
 - **Conexión:** proyecto, región, job, bucket y nombre del secreto. Se guardan
@@ -173,16 +197,16 @@ streamlit run admin.py --server.address localhost
   nombre de la tabla `gcp_billing_export_v1_…` se pega en la pestaña Conexión.
   La exportación solo reúne datos desde que se activa y tarda horas en
   llenarse. El neto es lo que realmente se paga: el free tier aparece como
-  créditos que descuentan el uso. Lógica en `gasto.py`, gráfico en `gasto_grafico.py`.
+  créditos que descuentan el uso. Lógica en `administracion/gasto.py`, gráfico en `administracion/gasto_grafico.py`.
 
 ## Uso (línea de comandos)
 
 ```bash
-python scan_getonbrd.py                             # país por defecto (Chile), todos sus sitios
-python scan_getonbrd.py --pais Chile
-python scan_getonbrd.py --pais Chile --solo laborum_cl   # re-correr solo un sitio puntual
-python scan_getonbrd.py --keywords-file keywords.txt     # usar keywords desde archivo
-python scan_getonbrd.py --generar-prompt-keywords         # imprime un prompt para pegar en Claude
+python escaner/scan_getonbrd.py                             # país por defecto (Chile), todos sus sitios
+python escaner/scan_getonbrd.py --pais Chile
+python escaner/scan_getonbrd.py --pais Chile --solo laborum_cl   # re-correr solo un sitio puntual
+python escaner/scan_getonbrd.py --keywords-file keywords.txt     # usar keywords desde archivo
+python escaner/scan_getonbrd.py --generar-prompt-keywords         # imprime un prompt para pegar en Claude
                                                             # y generar keywords.txt (no escanea nada)
 ```
 
@@ -235,7 +259,7 @@ vacío (Computrabajo, Magneto, LinkedIn, SENA).
 "📄 Buscar con descripción completa" en vez de "🔍 Buscar ofertas"): para
 Computrabajo, ChileTrabajos, LinkedIn, Magneto y Trabajando.cl, visita
 cada oferta que ya pasó el filtro de keyword/remoto y saca su descripción
-real — con los extractores de `extraer_oferta.py` en los primeros
+real — con los extractores de `escaner/extraer_oferta.py` en los primeros
 cuatro, y con la API de detalle propia (`GET /api/ofertas/<id>`) en
 Trabajando.cl. Alarga el scan de esos sitios (una request extra por
 oferta aceptada), así que no es el botón por defecto. SENA es el único
@@ -270,12 +294,12 @@ pero no hay forma de evitarlo dado que el sitio no soporta filtrar por
 país en el servidor.
 
 Detalle técnico de cada endpoint/selector está documentado como docstring
-al inicio de `scan_getonbrd.py`.
+al inicio de `escaner/scan_getonbrd.py`.
 
 ## Extraer el texto completo de una oferta puntual
 
 ```bash
-python extraer_oferta.py "<link-de-la-oferta>"
+python escaner/extraer_oferta.py "<link-de-la-oferta>"
 ```
 
 Baja la página (o, en Trabajando.cl, llama a su API de detalle) y saca
@@ -334,5 +358,5 @@ parámetro) — no hace falta reescribirlo.
 No hay integración en vivo — es un puente manual en dos puntos:
 1. `--generar-prompt-keywords` → pegas el prompt en Claude → guardas la
    respuesta en `keywords.txt`.
-2. `extraer_oferta.py <link>` → texto limpio de la oferta → lo pegas en
+2. `escaner/extraer_oferta.py <link>` → texto limpio de la oferta → lo pegas en
    el Project de Claude que arma el CV.

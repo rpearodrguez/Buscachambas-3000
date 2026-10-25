@@ -7,8 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import admin_nube
-import gasto
+from administracion import admin_nube, gasto
 
 FILAS = [
     {"dia": "2026-10-01", "proyecto": "p1", "servicio": "Cloud Run", "moneda": "USD", "bruto": 0.10, "creditos": -0.10},

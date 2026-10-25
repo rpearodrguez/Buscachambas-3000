@@ -1,16 +1,16 @@
 """
 Gráfico de gasto diario apilado por servicio (Altair)
 -----------------------------------------------------
-Separado de admin.py para poder dibujarlo con datos de ejemplo y revisarlo.
+Separado de administracion/admin.py para poder dibujarlo con datos de ejemplo y revisarlo.
 Reglas del skill de visualización: barras apiladas (parte del total por día),
-colores categóricos fijos por servicio (ver gasto.py), 2px de fondo entre
+colores categóricos fijos por servicio (ver administracion/gasto.py), 2px de fondo entre
 segmentos, grilla y ejes recesivos, leyenda siempre presente, tooltip por
-segmento, y una vista de tabla aparte en admin.py.
+segmento, y una vista de tabla aparte en administracion/admin.py.
 """
 
 import altair as alt
 
-import gasto
+from administracion import gasto
 
 SUPERFICIE = {"claro": "#fcfcfb", "oscuro": "#1a1a19"}
 TINTA_SECUNDARIA = {"claro": "#52514e", "oscuro": "#c3c2b7"}

@@ -12,8 +12,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import almacen as alm
-import scan_getonbrd as scanner
+from comun import almacen as alm
+from escaner import scan_getonbrd as scanner
 
 BUCKET_SECRETO = "bucket-secreto-123"
 PREFIJO_SECRETO = "users/abc"

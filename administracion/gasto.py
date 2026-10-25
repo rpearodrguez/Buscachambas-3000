@@ -1,5 +1,5 @@
 """
-Gasto de Google Cloud por servicio (lógica pura de la pestaña "Gastos" de admin.py)
+Gasto de Google Cloud por servicio (lógica pura de la pestaña "Gastos" de administracion/admin.py)
 ----------------------------------------------------------------------------------
 Toma las filas de la exportación de facturación a BigQuery (ya agregadas por
 día / proyecto / servicio) y las deja listas para graficar: totales, una serie

@@ -9,10 +9,10 @@ currículums.
 Cubre GetOnBrd, Computrabajo (Chile y Colombia), ChileTrabajos, ElEmpleo,
 Magneto, BNE, LinkedIn y Trabajando.cl. Laborum no lo necesita: su propia
 búsqueda ya trae la descripción completa (ver escanear_laborum en
-scan_getonbrd.py), así que nunca hace falta visitar la oferta aparte.
+escaner/scan_getonbrd.py), así que nunca hace falta visitar la oferta aparte.
 
 USO:
-    python extraer_oferta.py "<link-de-la-oferta>"
+    python escaner/extraer_oferta.py "<link-de-la-oferta>"
 """
 
 import json
@@ -182,7 +182,7 @@ def extraer(url: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Uso: python extraer_oferta.py \"<link-de-la-oferta>\"")
+        print("Uso: python escaner/extraer_oferta.py \"<link-de-la-oferta>\"")
         sys.exit(1)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

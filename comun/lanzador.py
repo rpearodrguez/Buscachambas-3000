@@ -40,7 +40,7 @@ def scan_sin_latido(estado: dict | None, ahora: float | None = None, umbral: flo
 
 
 def lanzar_job(nombre_job: str, argumentos: list[str], credenciales=None) -> None:
-    """Ejecuta el job con `argumentos` (los de la CLI de scan_getonbrd.py)
+    """Ejecuta el job con `argumentos` (los de la CLI de escaner/scan_getonbrd.py)
     sin esperar a que termine. nombre_job: projects/<p>/locations/<r>/jobs/<j>."""
     if not _FORMATO_JOB.match(nombre_job or ""):
         raise ErrorLanzador("La configuración del job de escaneo no es válida.")

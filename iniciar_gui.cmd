@@ -17,6 +17,7 @@ if errorlevel 1 (
     )
 )
 
-echo Abriendo Job Scanner...
-streamlit run gui.py
+echo Abriendo Job Scanner (modo local)...
+set BUSCACHAMBAS_MODO=local
+streamlit run app\gui.py
 pause

@@ -10,13 +10,13 @@ sigue activa, y el link.
 USO:
     pip install requests beautifulsoup4 --break-system-packages
 
-    python scan_getonbrd.py                        # país por defecto (Chile), todos sus sitios
-    python scan_getonbrd.py --pais Chile
-    python scan_getonbrd.py --pais Chile --solo laborum_cl      # solo re-correr un sitio puntual
-    python scan_getonbrd.py --keywords-file keywords.txt        # usar keywords desde archivo
-    python scan_getonbrd.py --generar-prompt-keywords            # imprime un prompt para pegar en Claude
+    python escaner/scan_getonbrd.py                        # país por defecto (Chile), todos sus sitios
+    python escaner/scan_getonbrd.py --pais Chile
+    python escaner/scan_getonbrd.py --pais Chile --solo laborum_cl      # solo re-correr un sitio puntual
+    python escaner/scan_getonbrd.py --keywords-file keywords.txt        # usar keywords desde archivo
+    python escaner/scan_getonbrd.py --generar-prompt-keywords            # imprime un prompt para pegar en Claude
                                                                    # y generar keywords.txt, no escanea nada
-    python scan_getonbrd.py --descripcion-completa                # más lento: visita cada oferta de
+    python escaner/scan_getonbrd.py --descripcion-completa                # más lento: visita cada oferta de
                                                                    # Computrabajo/ChileTrabajos/LinkedIn/Magneto
                                                                    # para sacar su descripción real
 
@@ -81,9 +81,13 @@ from urllib.parse import urljoin, urlparse, quote
 import requests
 from bs4 import BeautifulSoup
 
-from almacen import Almacen, AlmacenLocal, ErrorAlmacen, crear_almacen
-from extraer_oferta import EXTRACTORES as _EXTRACTORES_DETALLE
-from extraer_oferta import extraer_id_trabajando, extraer_trabajando
+# Los puntos de entrada viven en subcarpetas: la raíz del repo va en sys.path
+# para poder importar los paquetes hermanos (comun, escaner, ...).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from comun.almacen import Almacen, AlmacenLocal, ErrorAlmacen, crear_almacen  # noqa: E402
+from escaner.extraer_oferta import EXTRACTORES as _EXTRACTORES_DETALLE  # noqa: E402
+from escaner.extraer_oferta import extraer_id_trabajando, extraer_trabajando  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -267,7 +271,7 @@ def _quitar_tags_html(texto: str) -> str:
 
 def _obtener_descripcion_detalle(link: str) -> str:
     """Visita la página de detalle de una oferta y extrae su descripción
-    completa, reusando los mismos selectores que extraer_oferta.py (para
+    completa, reusando los mismos selectores que escaner/extraer_oferta.py (para
     no duplicar el mapeo de sitio → selector en dos archivos). Solo se usa
     cuando el modo --descripcion-completa está activo, en sitios cuyo
     buscador no trae ya la descripción en la respuesta de búsqueda."""
@@ -275,7 +279,7 @@ def _obtener_descripcion_detalle(link: str) -> str:
 
     if "trabajando.cl" in dominio:
         # Caso especial: no es un selector sobre HTML sino un fetch a la
-        # API de detalle por id (ver extraer_trabajando en extraer_oferta.py).
+        # API de detalle por id (ver extraer_trabajando en escaner/extraer_oferta.py).
         id_oferta = extraer_id_trabajando(link)
         if not id_oferta:
             return ""
@@ -1375,7 +1379,7 @@ def escanear_bne(keywords: list[str], require_remote: bool, on_progreso=None, de
 # "soporta_descripcion_completa": True marca los sitios cuyo buscador NO
 # trae ya la descripción completa (o solo trae un snippet corto) — para
 # esos, --descripcion-completa visita cada oferta aceptada y saca la
-# descripción real con los extractores de extraer_oferta.py. Laborum, BNE,
+# descripción real con los extractores de escaner/extraer_oferta.py. Laborum, BNE,
 # ElEmpleo y GetOnBrd no lo necesitan (ya la traen gratis); SENA queda
 # afuera por ahora (no tiene extractor de detalle todavía).
 SITIOS = [

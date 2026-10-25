@@ -8,8 +8,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import lanzador
-import scan_getonbrd as scanner
+from comun import lanzador
+from escaner import scan_getonbrd as scanner
 
 
 class SinLatidoTests(unittest.TestCase):
@@ -120,7 +120,7 @@ class InicioTests(unittest.TestCase):
 
     def test_el_escritor_parte_del_inicio_que_le_pasan(self):
         import tempfile
-        import almacen as alm
+        from comun import almacen as alm
         with tempfile.TemporaryDirectory() as d:
             e = scanner.EscritorEstado(alm.AlmacenLocal(d), "s.json", None, "Chile", ["X"], inicio=12345.0)
             self.assertEqual(e.estado["inicio_ts"], 12345.0)

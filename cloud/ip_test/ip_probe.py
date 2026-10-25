@@ -5,14 +5,16 @@ salida de Google? Imprime la IP/país de salida, un GET simple a GetOnBrd
 corre el scanner REAL con 1 keyword sobre el resto de los sitios de Chile.
 Compara el resultado con el mismo comando corrido en tu PC:
 
-    python scan_getonbrd.py --pais Chile --keywords-file kw_prueba.txt --solo computrabajo_cl,laborum_cl,trabajando_cl,chiletrabajos_cl,linkedin,bne_cl
+    python escaner/scan_getonbrd.py --pais Chile --keywords-file kw_prueba.txt --solo computrabajo_cl,laborum_cl,trabajando_cl,chiletrabajos_cl,linkedin,bne_cl
 """
+import os
 import subprocess
 import sys
 
 import requests
 
-import scan_getonbrd as scanner
+sys.path.insert(0, os.getcwd())  # en la imagen el código está en /app (el directorio de trabajo); en el repo, correr desde la raíz
+from escaner import scan_getonbrd as scanner  # noqa: E402
 
 SITIOS_PRUEBA = "computrabajo_cl,laborum_cl,trabajando_cl,chiletrabajos_cl,linkedin,bne_cl"
 KEYWORD_PRUEBA = "python"
@@ -36,7 +38,7 @@ def main():
         f.write(KEYWORD_PRUEBA + "\n")
     print(f"\n--- Scan real, keyword '{KEYWORD_PRUEBA}', sitios: {SITIOS_PRUEBA} ---", flush=True)
     resultado = subprocess.run([
-        sys.executable, "scan_getonbrd.py", "--pais", "Chile",
+        sys.executable, "escaner/scan_getonbrd.py", "--pais", "Chile",
         "--keywords-file", "kw_prueba.txt", "--solo", SITIOS_PRUEBA,
     ])
     sys.exit(resultado.returncode)

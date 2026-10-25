@@ -9,9 +9,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import admin_nube
-import almacen as alm
-import usuarios
+from administracion import admin_nube
+from comun import almacen as alm
+from comun import usuarios
 
 
 class UsuariosTests(unittest.TestCase):
