@@ -1,0 +1,7 @@
+# Uso (desde la raíz del repo):
+#   gcloud builds submit --config cloud/ip_test/cloudbuild.yaml .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "cloud/ip_test/Dockerfile", "-t", "us-central1-docker.pkg.dev/$PROJECT_ID/buscachambas/ip-test", "."]
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/buscachambas/ip-test

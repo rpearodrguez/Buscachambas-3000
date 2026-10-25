@@ -1,0 +1,14 @@
+# Lo que NO se sube a Cloud Build (en especial email_config.json: tiene la contraseña)
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.csv
+*.json
+!email_config.example.json
+*.log
+*.lnk
+*.ico
+*.flag
+*.txt
+!requirements.txt
