@@ -1453,20 +1453,24 @@ def ejecutar_sitios(ids_sitios: list[str], keywords: list[str], require_remote: 
             gen = sitio["fn"](keywords, require_remote, on_progreso=_on_paso, debe_detener=debe_detener, on_error=_on_error, on_oferta=on_oferta, **kwargs_extra)
         generadores.append({"filas": [], "gen": gen})
 
+    # Al detener NO se abandonan los generadores: cada uno revisa
+    # debe_detener() al retomar, sale de su loop sin hacer más requests y
+    # devuelve (vía StopIteration) las ofertas que ya había encontrado.
+    # Cortar el while de golpe, como se hacía antes, tiraba esas ofertas.
+    detenido = False
     activos = list(generadores)
     while activos:
-        if debe_detener and debe_detener():
-            break
         siguientes = []
         for entry in activos:
+            if not detenido and debe_detener and debe_detener():
+                detenido = True
             try:
                 next(entry["gen"])
                 siguientes.append(entry)
             except StopIteration as fin:
                 entry["filas"] = fin.value or []
-            time.sleep(REQUEST_DELAY_SECONDS)
-            if debe_detener and debe_detener():
-                break
+            if not detenido:
+                time.sleep(REQUEST_DELAY_SECONDS)
         activos = siguientes
 
     filas = []

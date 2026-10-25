@@ -56,5 +56,60 @@ class EstadoInicialTests(unittest.TestCase):
         self.assertEqual(e["progreso"], {"sitio": "", "etiqueta": "", "i": 0, "total": 0})
 
 
+class DetenerConservaLoEncontradoTests(unittest.TestCase):
+    """Al detener, cada sitio debe devolver lo que ya había encontrado (antes
+    ejecutar_sitios cortaba de golpe y esas ofertas se perdían)."""
+
+    def _sitio_falso(self, nombre, pasos_hasta_ver_stop):
+        pedidos = []
+
+        def fn(keywords, require_remote, on_progreso=None, debe_detener=None, on_error=None, on_oferta=None):
+            encontradas = []
+            for kw in keywords:
+                if debe_detener and debe_detener():
+                    break
+                pedidos.append((nombre, kw))
+                encontradas.append({"sitio": nombre, "titulo": kw, "link": f"http://{nombre}/{kw}"})
+                yield
+            return encontradas
+
+        return fn, pedidos
+
+    def test_detener_a_mitad_devuelve_las_ofertas_ya_encontradas_y_no_hace_mas_requests(self):
+        fn_a, pedidos_a = self._sitio_falso("A", 2)
+        fn_b, pedidos_b = self._sitio_falso("B", 2)
+        viejos = (scanner.SITIOS_POR_ID, scanner.REQUEST_DELAY_SECONDS)
+        scanner.SITIOS_POR_ID = {"a": {"id": "a", "nombre": "A", "fn": fn_a}, "b": {"id": "b", "nombre": "B", "fn": fn_b}}
+        scanner.REQUEST_DELAY_SECONDS = 0
+        try:
+            llamadas = {"n": 0}
+
+            def debe_detener():
+                llamadas["n"] += 1
+                return len(pedidos_a) + len(pedidos_b) >= 4  # tras 2 pedidos por sitio
+
+            filas, habilitados = scanner.ejecutar_sitios(
+                ["a", "b"], ["k1", "k2", "k3", "k4", "k5"], True, "Chile", debe_detener=debe_detener,
+            )
+        finally:
+            scanner.SITIOS_POR_ID, scanner.REQUEST_DELAY_SECONDS = viejos
+        self.assertEqual(habilitados, {"A", "B"})
+        self.assertEqual(sorted(f["titulo"] for f in filas if f["sitio"] == "A"), ["k1", "k2"])
+        self.assertEqual(sorted(f["titulo"] for f in filas if f["sitio"] == "B"), ["k1", "k2"])
+        self.assertEqual(len(pedidos_a), 2)  # no siguió pidiendo después de detener
+        self.assertEqual(len(pedidos_b), 2)
+
+    def test_sin_detener_corre_todo(self):
+        fn_a, pedidos_a = self._sitio_falso("A", 0)
+        viejos = (scanner.SITIOS_POR_ID, scanner.REQUEST_DELAY_SECONDS)
+        scanner.SITIOS_POR_ID = {"a": {"id": "a", "nombre": "A", "fn": fn_a}}
+        scanner.REQUEST_DELAY_SECONDS = 0
+        try:
+            filas, _ = scanner.ejecutar_sitios(["a"], ["k1", "k2", "k3"], True, "Chile", debe_detener=lambda: False)
+        finally:
+            scanner.SITIOS_POR_ID, scanner.REQUEST_DELAY_SECONDS = viejos
+        self.assertEqual(len(filas), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
