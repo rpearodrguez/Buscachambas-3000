@@ -169,8 +169,8 @@ exige login con Google (`st.login`, necesita `Authlib`):
   se le muestran) y parte con todos los sitios marcados. Después se le recuerdan por usuario el
   país, los sitios, "solo remotas" y el aviso por correo (`preferencias.json` en su carpeta).
   Las **keywords no se recuerdan** salvo que las guarde con el botón "Guardar keywords".
-- **País por defecto:** lo elige el administrador en la pestaña *General* de `administracion/admin.py`
-  (`admin/ajustes.json`); solo vale para quien aún no tiene elecciones guardadas.
+- **País por defecto, por persona:** el administrador lo asigna a cada usuario en la pestaña *Usuarios* de
+  `administracion/admin.py`; solo vale hasta que esa persona tenga elecciones guardadas.
 - Sin esas variables (tu PC), todo sigue igual que antes: sin login ni cuotas.
 
 Lógica en `comun/acceso.py` y `comun/usuarios.py`, con tests (`python -m unittest discover -s tests`).
@@ -194,9 +194,8 @@ streamlit run administracion/admin.py --server.address localhost
   del job; el token va a Secret Manager sin mostrarse y no se puede volver a
   leer (se conservan la versión nueva y la anterior). "Guardar y probar"
   ejecuta el job con `--probar-correo`, así se prueba el camino real.
-- **General:** país con el que parten los usuarios nuevos.
-- **Usuarios:** lista de correos autorizados, con rol y cuota de scans por
-  semana (1 por defecto). Vive en la parte `admin/` del bucket privado.
+- **Usuarios:** lista de correos autorizados, con rol, cuota de scans por
+  semana (1 por defecto) y país por defecto de cada uno. Vive en la parte `admin/` del bucket privado.
 - **Gastos:** gráfico del gasto diario por servicio (barras apiladas, bruto o
   neto, por proyecto, con tabla de detalle). Lee la **exportación de
   facturación a BigQuery**, que se activa una sola vez en la consola de

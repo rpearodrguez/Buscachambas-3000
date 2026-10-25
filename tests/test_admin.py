@@ -26,7 +26,8 @@ class UsuariosTests(unittest.TestCase):
         con_ana = usuarios.agregar(base, "Ana@x.cl", "admin", 3)
         self.assertEqual(base, usuarios.vacio())
         self.assertEqual(con_ana["usuarios"]["ana@x.cl"], {"rol": "admin", "cuota_semanal": 3})
-        cambiado = usuarios.agregar(con_ana, "ana@x.cl", "usuario", 1)
+        con_jefe = usuarios.agregar(con_ana, "jefe@x.cl", "admin")  # otro admin: así Ana se puede degradar
+        cambiado = usuarios.agregar(con_jefe, "ana@x.cl", "usuario", 1)
         self.assertEqual(cambiado["usuarios"]["ana@x.cl"]["rol"], "usuario")
 
     def test_cuota_y_rol_invalidos(self):
@@ -50,6 +51,44 @@ class UsuariosTests(unittest.TestCase):
         self.assertIn("ana@x.cl", d["usuarios"])  # el original intacto
         with self.assertRaises(usuarios.ErrorUsuarios):
             usuarios.quitar(d, "nadie@x.cl")
+
+    PAISES = ["Chile", "Colombia"]
+
+    def test_pais_por_defecto_por_persona(self):
+        d = usuarios.agregar(usuarios.vacio(), "jefe@x.cl", "admin")
+        d = usuarios.agregar(d, "ana@x.cl", "usuario", 1, "Colombia", self.PAISES)
+        d = usuarios.agregar(d, "beto@x.cl", "usuario", 1)
+        self.assertEqual(usuarios.pais_por_defecto(usuarios.info(d, "ana@x.cl"), self.PAISES), "Colombia")
+        self.assertIsNone(usuarios.pais_por_defecto(usuarios.info(d, "beto@x.cl"), self.PAISES))
+        self.assertNotIn("pais_por_defecto", d["usuarios"]["beto@x.cl"])  # sin país, el campo ni existe
+
+    def test_pais_desconocido_se_rechaza_y_uno_que_ya_no_existe_se_ignora(self):
+        with self.assertRaises(usuarios.ErrorUsuarios):
+            usuarios.agregar(usuarios.vacio(), "a@x.cl", "usuario", 1, "Atlantida", self.PAISES)
+        ficha = {"rol": "usuario", "pais_por_defecto": "Atlantida"}
+        self.assertIsNone(usuarios.pais_por_defecto(ficha, self.PAISES))
+        self.assertIsNone(usuarios.pais_por_defecto(None, self.PAISES))
+
+    def test_editar_reemplaza_la_ficha_y_quitar_el_pais_lo_borra(self):
+        d = usuarios.agregar(usuarios.agregar(usuarios.vacio(), "jefe@x.cl", "admin"), "ana@x.cl", "usuario", 1, "Colombia", self.PAISES)
+        sin_pais = usuarios.agregar(d, "ana@x.cl", "usuario", 3)
+        self.assertEqual(sin_pais["usuarios"]["ana@x.cl"], {"rol": "usuario", "cuota_semanal": 3})
+        self.assertEqual(d["usuarios"]["ana@x.cl"]["pais_por_defecto"], "Colombia")  # el original intacto
+
+    def test_el_pais_sobrevive_a_guardar_y_cargar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = alm.AlmacenLocal(tmp)
+            d = usuarios.agregar(usuarios.agregar(usuarios.vacio(), "jefe@x.cl", "admin"), "ana@x.cl", "usuario", 1, "Colombia", self.PAISES)
+            usuarios.guardar(a, d)
+            self.assertEqual(usuarios.cargar(a), d)
+
+    def test_editar_no_puede_dejar_la_lista_sin_administradores(self):
+        d = usuarios.agregar(usuarios.vacio(), "jefe@x.cl", "admin")
+        with self.assertRaises(usuarios.ErrorUsuarios):
+            usuarios.agregar(d, "jefe@x.cl", "usuario")  # degradar al único admin
+        d2 = usuarios.agregar(d, "otro@x.cl", "admin")
+        usuarios.agregar(d2, "jefe@x.cl", "usuario")  # ahora sí: queda otro admin
+        usuarios.agregar(usuarios.vacio(), "ana@x.cl", "usuario")  # lista sin admins desde el inicio: se puede arrancar
 
     def test_permisos(self):
         d = usuarios.agregar(usuarios.agregar(usuarios.vacio(), "jefe@x.cl", "admin"), "ana@x.cl")

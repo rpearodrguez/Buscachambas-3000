@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(RAIZ)  # estado, CSV, keywords y logs locales viven en la raíz del repo, no en app/
 
-from comun import acceso, ajustes, lanzador, usuarios  # noqa: E402
+from comun import acceso, lanzador, usuarios  # noqa: E402
 from comun import almacen as almacenamiento  # noqa: E402
 from escaner import extraer_oferta as extractor  # noqa: E402
 from escaner import scan_getonbrd as scanner  # noqa: E402
@@ -133,21 +133,12 @@ def _lista_de_usuarios(_almacen_admin):
     return usuarios.cargar(_almacen_admin)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def _ajustes_del_admin(_almacen_admin):
-    try:
-        return ajustes.cargar(_almacen_admin)
-    except almacenamiento.ErrorAlmacen:
-        return {}  # un ajuste que no se puede leer no debe impedir entrar
-
-
 if JOB_NAME and not STORAGE_BASE:
     st.error("Configuración incompleta: el escaneo en la nube necesita almacenamiento compartido.")
     st.stop()
 
 usuario_email = None
 info_usuario = None
-ajustes_del_admin = {}
 USUARIO_ID = USUARIO_LOCAL
 if JOB_NAME:
     # --- login y lista de usuarios (todo falla cerrado) ---
@@ -185,7 +176,6 @@ if JOB_NAME:
         st.button("Cerrar sesión", on_click=st.logout)
         st.stop()
 
-    ajustes_del_admin = _ajustes_del_admin(almacen_admin)
     usuario_email = usuarios.normalizar_correo(st.user.get("email"))
     USUARIO_ID = almacenamiento.id_usuario(usuario_email)
     st.sidebar.caption(f"Sesión iniciada como {usuario_email}")
@@ -334,10 +324,10 @@ def _keywords_guardadas() -> str:
 # keywords de nadie) y con todo seleccionado; si ya usó la herramienta, vuelven sus elecciones.
 if "_iniciado" not in st.session_state:
     prefs = _cargar_prefs() if JOB_NAME else {}
-    # Un usuario sin elecciones guardadas parte en el país que definió el administrador (si lo hizo).
+    # Un usuario sin elecciones guardadas parte en el país que el administrador le asignó (si lo hizo).
     pais_inicial = (
         prefs.get("pais") if prefs.get("pais") in scanner.PAISES
-        else ajustes.pais_por_defecto(ajustes_del_admin, scanner.PAISES) or next(iter(scanner.PAISES))
+        else usuarios.pais_por_defecto(info_usuario, scanner.PAISES) or next(iter(scanner.PAISES))
     )
     ids_pais = scanner.PAISES[pais_inicial]
     if isinstance(prefs.get("sitios"), list):

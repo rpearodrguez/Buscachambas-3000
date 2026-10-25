@@ -75,14 +75,29 @@ def _validar_cuota(cuota) -> int:
     return cuota
 
 
-def agregar(datos: dict, correo: str, rol: str = "usuario", cuota_semanal: int = CUOTA_SEMANAL_POR_DEFECTO) -> dict:
-    """Agrega o actualiza un usuario. Devuelve un dict nuevo."""
+def agregar(datos: dict, correo: str, rol: str = "usuario", cuota_semanal: int = CUOTA_SEMANAL_POR_DEFECTO,
+            pais_por_defecto: str | None = None, paises=None) -> dict:
+    """Agrega o actualiza un usuario (reemplaza su ficha completa). Devuelve un dict nuevo.
+
+    pais_por_defecto: el país con el que parte este usuario mientras no tenga elecciones guardadas
+    (opcional; sin él parte en el primero de la lista). Si se pasa `paises`, se valida contra ellos."""
     c = validar_correo(correo)
     if rol not in ROLES:
         raise ErrorUsuarios("Rol desconocido.")
+    ficha = {"rol": rol, "cuota_semanal": _validar_cuota(cuota_semanal)}
+    if pais_por_defecto:
+        if paises is not None and pais_por_defecto not in paises:
+            raise ErrorUsuarios("País desconocido.")
+        ficha["pais_por_defecto"] = pais_por_defecto
     nuevo = copy.deepcopy(datos)
-    nuevo["usuarios"][c] = {"rol": rol, "cuota_semanal": _validar_cuota(cuota_semanal)}
+    nuevo["usuarios"][c] = ficha
+    if _hay_admin(datos) and not _hay_admin(nuevo):
+        raise ErrorUsuarios("No se puede dejar la lista sin ningún administrador.")
     return nuevo
+
+
+def _hay_admin(datos: dict) -> bool:
+    return any(u.get("rol") == "admin" for u in datos["usuarios"].values())
 
 
 def quitar(datos: dict, correo: str) -> dict:
@@ -109,3 +124,9 @@ def es_permitido(datos: dict, correo: str) -> bool:
 def es_admin(datos: dict, correo: str) -> bool:
     u = info(datos, correo)
     return bool(u) and u.get("rol") == "admin"
+
+
+def pais_por_defecto(info: dict | None, paises) -> str | None:
+    """El país asignado a este usuario por el administrador, solo si sigue siendo uno válido."""
+    pais = (info or {}).get("pais_por_defecto")
+    return pais if pais in paises else None

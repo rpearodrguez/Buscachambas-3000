@@ -30,7 +30,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(RAIZ)  # admin_local.json y demás archivos locales viven en la raíz del repo
 
 from administracion import admin_nube, gasto, gasto_grafico  # noqa: E402
-from comun import ajustes, usuarios  # noqa: E402
+from comun import usuarios  # noqa: E402
 from comun import almacen as almacenamiento  # noqa: E402
 from escaner import scan_getonbrd as scanner  # noqa: E402  (solo para la lista de países)
 
@@ -45,9 +45,7 @@ def _mostrar_error(e: Exception, contexto: str):
 
 cfg = admin_nube.cargar_config_local()
 
-tab_conexion, tab_correo, tab_usuarios, tab_general, tab_gastos = st.tabs(
-    ["Conexión", "Correo (SMTP)", "Usuarios", "General", "Gastos"]
-)
+tab_conexion, tab_correo, tab_usuarios, tab_gastos = st.tabs(["Conexión", "Correo (SMTP)", "Usuarios", "Gastos"])
 
 # ---------------------------------------------------------------------------
 # Conexión
@@ -149,6 +147,10 @@ with tab_correo:
 # ---------------------------------------------------------------------------
 # Usuarios
 # ---------------------------------------------------------------------------
+NUEVO_USUARIO = "(nuevo usuario)"
+SIN_PAIS = "(el primero de la lista)"
+
+
 def _pestana_usuarios(cfg):
     st.subheader("Usuarios autorizados")
     try:
@@ -158,24 +160,47 @@ def _pestana_usuarios(cfg):
         _mostrar_error(e, "No se pudo leer la lista de usuarios")
         return  # solo esta pestaña falla; las demás siguen
 
+    paises = list(scanner.PAISES)
     if datos["usuarios"]:
         st.dataframe(
-            [{"correo": c, "rol": u.get("rol", "usuario"), "cuota semanal": u.get("cuota_semanal", usuarios.CUOTA_SEMANAL_POR_DEFECTO)}
+            [{"correo": c, "rol": u.get("rol", "usuario"),
+              "cuota semanal": u.get("cuota_semanal", usuarios.CUOTA_SEMANAL_POR_DEFECTO),
+              "país por defecto": u.get("pais_por_defecto") or "—"}
              for c, u in sorted(datos["usuarios"].items())],
             width="stretch", hide_index=True,
         )
     else:
         st.warning("Todavía no hay usuarios. Agrega primero tu propio correo como administrador.")
 
-    with st.form("form_agregar_usuario"):
-        st.markdown("**Agregar o actualizar un usuario**")
-        correo = st.text_input("Correo (el que usa para entrar con Google)")
-        col_r, col_c = st.columns(2)
-        rol = col_r.selectbox("Rol", usuarios.ROLES)
-        cuota = col_c.number_input("Scans por semana", value=usuarios.CUOTA_SEMANAL_POR_DEFECTO, min_value=0, max_value=usuarios.CUOTA_MAXIMA, step=1)
+    st.markdown("**Agregar o editar un usuario**")
+    elegido = st.selectbox(
+        "Usuario", [NUEVO_USUARIO] + sorted(datos["usuarios"]),
+        help="Elige uno existente para cambiar su rol, cuota o país sin perder el resto de su ficha.",
+    )
+    ficha = datos["usuarios"].get(elegido, {})
+    # La clave del formulario incluye al usuario: al elegir a otro, los campos se rellenan con su ficha.
+    with st.form(f"form_usuario_{elegido}"):
+        if elegido == NUEVO_USUARIO:
+            correo = st.text_input("Correo (el que usa para entrar con Google)")
+        else:
+            correo = elegido
+            st.text_input("Correo", value=elegido, disabled=True)
+        col_r, col_c, col_p = st.columns(3)
+        rol_actual = ficha.get("rol")
+        rol = col_r.selectbox("Rol", usuarios.ROLES, index=usuarios.ROLES.index(rol_actual) if rol_actual in usuarios.ROLES else 0)
+        cuota = col_c.number_input(
+            "Scans por semana", value=int(ficha.get("cuota_semanal", usuarios.CUOTA_SEMANAL_POR_DEFECTO)),
+            min_value=0, max_value=usuarios.CUOTA_MAXIMA, step=1,
+        )
+        opciones_pais = [SIN_PAIS] + paises
+        pais_actual = usuarios.pais_por_defecto(ficha, paises)
+        pais = col_p.selectbox(
+            "País por defecto", opciones_pais, index=opciones_pais.index(pais_actual) if pais_actual else 0,
+            help="Con este país parte la persona mientras no tenga elecciones guardadas; después elige el suyo y se le recuerda.",
+        )
         if st.form_submit_button("Guardar usuario"):
             try:
-                usuarios.guardar(almacen_admin, usuarios.agregar(datos, correo, rol, cuota))
+                usuarios.guardar(almacen_admin, usuarios.agregar(datos, correo, rol, cuota, None if pais == SIN_PAIS else pais, paises))
                 st.rerun()
             except usuarios.ErrorUsuarios as e:
                 st.error(str(e))
@@ -185,7 +210,7 @@ def _pestana_usuarios(cfg):
     if datos["usuarios"]:
         with st.form("form_quitar_usuario"):
             st.markdown("**Quitar un usuario**")
-            quitar = st.selectbox("Usuario", sorted(datos["usuarios"]))
+            quitar = st.selectbox("Usuario a quitar", sorted(datos["usuarios"]))
             if st.form_submit_button("Quitar"):
                 try:
                     usuarios.guardar(almacen_admin, usuarios.quitar(datos, quitar))
@@ -196,44 +221,11 @@ def _pestana_usuarios(cfg):
                     _mostrar_error(e, "No se pudo quitar")
 
 
-def _pestana_general(cfg):
-    st.subheader("Ajustes generales")
-    try:
-        almacen_admin = _almacen_admin(admin_nube.destino_admin(cfg))
-        actuales = ajustes.cargar(almacen_admin)
-    except Exception as e:
-        _mostrar_error(e, "No se pudieron leer los ajustes")
-        return  # solo esta pestaña falla; las demás siguen
-
-    paises = list(scanner.PAISES)
-    actual = ajustes.pais_por_defecto(actuales, paises) or paises[0]
-    with st.form("form_general"):
-        pais = st.selectbox("País con el que parten los usuarios nuevos", paises, index=paises.index(actual))
-        st.caption(
-            "Solo vale para quien todavía no tiene elecciones guardadas: después cada usuario elige "
-            "su país, sitios y opciones, y se le recuerdan."
-        )
-        if st.form_submit_button("Guardar"):
-            try:
-                ajustes.guardar(almacen_admin, ajustes.con_pais_por_defecto(actuales, pais, paises))
-                st.success(f"Listo: los usuarios nuevos partirán en {pais}.")
-            except ValueError as e:
-                st.error(str(e))
-            except Exception as e:
-                _mostrar_error(e, "No se pudo guardar")
-
-
 with tab_usuarios:
     if not cfg:
         st.info("Primero configura la conexión.")
     else:
         _pestana_usuarios(cfg)
-
-with tab_general:
-    if not cfg:
-        st.info("Primero configura la conexión.")
-    else:
-        _pestana_general(cfg)
 
 # ---------------------------------------------------------------------------
 # Gastos
